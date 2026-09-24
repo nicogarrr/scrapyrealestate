@@ -28,118 +28,72 @@ class HabitacliaSpider(CrawlSpider):
     }
 
     def parse(self, response):
+        # habitaclia (grupo Adevinta) usa desde 2025 el motor de fotocasa:
+        # listado renderizado en servidor como <article data-panot-component=
+        # "link-box">. El markup viejo (div.list-item) ya no existe.
         items = ScrapyrealestateItem()
         soup = BeautifulSoup(response.text, 'lxml')
-        # Cada vivienda es un div.list-item.
-        flats = soup.find_all("div", {"class": "list-item"})
-
-        # Obtenemos si es alquiler o compra a partir de la url
-        if self.start_urls.split('/')[3].split('-')[0] == 'alquiler':
-            type = 'rent'
-        elif self.start_urls.split('/')[3].split('-')[0] == 'venta':
-            type = 'buy'
-        else:
-            type = ''
-
-        for nflat in range(len(flats)):
+        mslug = re.search(r'viviendas-([a-z_]+)\.htm', str(self.start_urls))
+        slug_town = {'gijon': 'Gijón', 'oviedo': 'Oviedo',
+                     'mieres': 'Mieres', 'siero': 'Siero'}.get(
+                         mslug.group(1) if mslug else '', '')
+        for card in soup.find_all('article'):
             try:
-                title = flats[nflat].find("h3", {"class": "list-item-title"}).find("a").text.strip()
-            except:
-                title = ''
-            # Municipio, calle y barrio. Ejemplos de titulo:
-            #   "Alquiler Piso Calle de Alcala. Magnifico piso..."
-            #   "Madrid - Centro"
-            town = ''
-            neighbour = ''
-            street = ''
-            street_ = ''
-            number = ''
-            # Quitamos el prefijo del tipo de inmueble para quedarnos con la via.
-            # El orden importa: las variantes "  en  " van antes que las cortas.
-            prefixes = ('Alquiler Piso  en  ', 'Alquiler Apartamento  en  ',
-                        'Alquiler Piso  ', 'Alquiler Apartamento  ', 'Alquiler Ático  ',
-                        'Alquiler Estudio  ', 'Dúplex  en  ', 'Chalet  en  ',
-                        'Casa adosada  ', 'Piso  C/ ', 'Piso  ')
-            if len(title.split('.')) > 1:
-                head = title.split('.')[0]
-                for p in prefixes:
-                    if p in title:
-                        street_ = head.replace(p, '')
-                        break
-            if street_:
-                street = street_
+                title = card.get('aria-label', '').strip()
+                if not title or ' en ' not in title:
+                    continue
+                a = card.find('a', href=re.compile(r'^/i\d+'))
+                href = ('https://www.habitaclia.com' + a['href'].split('?')[0]
+                        ) if a else ''
+                blob = re.sub(r'\s+', ' ', card.get_text(' ')).strip()
 
-            town_ = flats[nflat].find("p", {"class": "list-item-location"}).find("span").text.strip()
-            if ' - ' in town_:
-                if len(town_.split(' - ')) == 2:
-                    town = town_.split(' - ')[0]
-                    neighbour = town_.split(' - ')[-1]
-                elif len(town_.split(' - ')) == 3:
-                    town = town_.split(' - ')[0]
-                    neighbour = town_.split(' - ')[-1]
-            try:
-                number = re.findall(r'\d+', street)[0]
-            except:
-                pass
+                mprice = re.search(r'([\d.]+)\s*€', blob)
+                price = mprice.group(1) + ' €' if mprice else ''
+                mm2 = re.search(r'(\d+)\s*m²', blob)
+                m2 = mm2.group(1) if mm2 else ''
+                mrooms = re.search(r'(\d+)\s*hab', blob)
+                rooms = mrooms.group(1) + ' hab.' if mrooms else ''
+                mfloor = re.search(r'(\d+)º', blob)
+                floor = mfloor.group(0) if mfloor else ''
 
-            # Los anuncios "relacionados" (ady-relationship) marcan el final del listado.
-            try:
-                over_flat = flats[nflat].find("span", {"class": "ady-relationship"}).text.strip()
-            except:
-                over_flat = ''
+                # localidad: tras el título y antes de los m² -> "Este, Gijón"
+                town = slug_town
+                neighbour = ''
+                street = ''
+                number = ''
+                try:
+                    loc = blob.split(title)[1].split('m²')[0]
+                    loc = re.sub(r'\d+\s*$', '', loc).strip()
+                    parts = [x.strip() for x in loc.split(',') if x.strip()]
+                    # "Gijón, Asturias" cuando el anuncio no da barrio
+                    if parts and parts[-1].lower() == 'asturias':
+                        parts = parts[:-1]
+                    if parts:
+                        town = parts[-1] or slug_town
+                        neighbour = parts[0] if len(parts) > 1 else ''
+                    elif loc:
+                        town = loc
+                except Exception:
+                    pass
 
-            if over_flat != '':
-                break
+                lid = re.search(r'/i(\d+)', href)
+                id = lid.group(1) if lid else (
+                    ''.join(c for c in rooms if c.isdigit())
+                    + ''.join(c for c in price if c.isdigit()) + m2)
 
-            link_el = flats[nflat].find("h3", {"class": "list-item-title"})
-            link_el = link_el.find("a", href=True) if link_el else None
-            if link_el is None:
-                continue  # tarjeta sin enlace: la saltamos
-            href = link_el['href']
-
-            try:
-                price = flats[nflat].find("span", {"class": "font-2"}).text.strip()
-            except:
-                price = ''
-
-            # El texto de list-item-feature es "<m2>m² - <n> habitaciones - ...".
-            feature = ''
-            try:
-                feature = flats[nflat].find("p", {"class": "list-item-feature"}).text.strip()
-            except:
-                pass
-            try:
-                rooms = feature.split('-')[1][1:6]
-            except:
-                rooms = ''
-            try:
-                m2 = feature.split('-')[0][:4]
-            except:
-                m2 = ''
-
-            # habitaclia no expone la planta en el listado; queda vacia.
-            floor = ''
-
-            # id sintetico (habitaciones + precio + m2): el listado no trae id real.
-            id = ''.join(c for c in rooms if c.isdigit()) + \
-                 ''.join(c for c in price if c.isdigit()) + \
-                 ''.join(c for c in m2 if c.isdigit())
-
-            items['id'] = id
-            items['price'] = price.replace(' ', '') + '/mes'
-            items['m2'] = m2
-            items['rooms'] = rooms
-            items['floor'] = floor
-            items['town'] = town
-            items['neighbour'] = neighbour
-            items['street'] = street
-            items['number'] = number
-            items['type'] = type
-            items['title'] = title
-            items['href'] = href
-            items['site'] = 'habitaclia'
-
-            yield items
-
-    # Procesamos tambien la primera pagina (no solo las paginadas).
-    parse_start_url = parse
+                items['id'] = id
+                items['price'] = price
+                items['m2'] = m2
+                items['rooms'] = rooms
+                items['floor'] = floor
+                items['town'] = town
+                items['neighbour'] = neighbour
+                items['street'] = street
+                items['number'] = number
+                items['type'] = 'buy'
+                items['title'] = title
+                items['href'] = href
+                items['site'] = 'habitaclia'
+                yield items
+            except Exception:
+                continue
