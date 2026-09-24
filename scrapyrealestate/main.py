@@ -460,6 +460,7 @@ SEGURIDAD_2024 = {
     "langreo":  {"total": "848",   "var": "-8%",  "dom": "43",  "domvar": "-8%"},
     "mieres":   {"total": "647",   "var": "-10%", "dom": "15",  "domvar": "-53%"},
     "castrillón": {"total": "319", "var": "+15%", "dom": "8",   "domvar": "-27%"},
+    "siero":      {"total": "1.136", "var": "+1%",  "dom": "52",  "domvar": "-32%"},
 }
 
 

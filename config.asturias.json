@@ -9,18 +9,35 @@
   "min_price": "0",
   "max_price": "110000",
   "url_idealista": [
-    "https://www.idealista.com/venta-viviendas/asturias/con-precio-hasta_110000,ascensor/"
+    "https://www.idealista.com/venta-viviendas/gijon-gijon/con-precio-hasta_110000,ascensor/",
+    "https://www.idealista.com/venta-viviendas/oviedo-oviedo/con-precio-hasta_110000,ascensor/",
+    "https://www.idealista.com/venta-viviendas/mieres/con-precio-hasta_110000,ascensor/",
+    "https://www.idealista.com/venta-viviendas/siero/con-precio-hasta_110000,ascensor/"
   ],
   "proxy_idealista": "off",
   "url_pisoscom": [
-    "https://www.pisos.com/venta/pisos-asturias/ascensor/hasta-110000"
+    "https://www.pisos.com/venta/pisos-gijon_concejo_xixon_conceyu_gijon/ascensor/hasta-110000",
+    "https://www.pisos.com/venta/pisos-oviedo/ascensor/hasta-110000",
+    "https://www.pisos.com/venta/pisos-mieres/ascensor/hasta-110000",
+    "https://www.pisos.com/venta/pisos-siero/ascensor/hasta-110000"
   ],
   "url_fotocasa": [
-    "https://www.fotocasa.es/es/comprar/viviendas/asturias/todas-las-zonas/ascensor/l?sortType=publicationDate&sortOrderDesc=true"
+    "https://www.fotocasa.es/es/comprar/viviendas/gijon/todas-las-zonas/ascensor/l?sortType=publicationDate&sortOrderDesc=true",
+    "https://www.fotocasa.es/es/comprar/viviendas/oviedo/todas-las-zonas/ascensor/l?sortType=publicationDate&sortOrderDesc=true",
+    "https://www.fotocasa.es/es/comprar/viviendas/mieres-asturias/todas-las-zonas/ascensor/l?sortType=publicationDate&sortOrderDesc=true",
+    "https://www.fotocasa.es/es/comprar/viviendas/siero/todas-las-zonas/ascensor/l?sortType=publicationDate&sortOrderDesc=true"
   ],
-  "url_habitaclia": [],
+  "url_habitaclia": [
+    "https://www.habitaclia.com/viviendas-gijon.htm",
+    "https://www.habitaclia.com/viviendas-oviedo.htm",
+    "https://www.habitaclia.com/viviendas-mieres.htm",
+    "https://www.habitaclia.com/viviendas-siero.htm"
+  ],
   "url_yaencontre": [
-    "https://www.yaencontre.com/venta/pisos/asturias/f-ascensor"
+    "https://www.yaencontre.com/venta/pisos/gijon/f-ascensor",
+    "https://www.yaencontre.com/venta/pisos/oviedo/f-ascensor",
+    "https://www.yaencontre.com/venta/pisos/mieres/f-ascensor",
+    "https://www.yaencontre.com/venta/pisos/siero/f-ascensor"
   ],
   "send_first": "False"
 }
