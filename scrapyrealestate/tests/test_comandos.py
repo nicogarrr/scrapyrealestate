@@ -66,3 +66,10 @@ def test_resolver_ref():
     assert comandos.resolver_ref("@maria_g", lista)["user_id"] == 123
     assert comandos.resolver_ref("maria", lista)["user_id"] == 123
     assert comandos.resolver_ref("@otro", lista) is None
+
+
+def test_preautorizado_sin_id():
+    lista = [{"user_id": None, "nombre": "", "username": "rodrigarrr",
+              "rol": "admin"}]
+    assert comandos.resolver_ref("@rodrigarrr", lista)["rol"] == "admin"
+    assert comandos.resolver_ref("@otro", lista) is None

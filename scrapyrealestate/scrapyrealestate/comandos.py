@@ -13,6 +13,7 @@ CONFIG_PATH = "./data/config.json"
 OWNER_PATH = "./data/telegram_owner.json"     # {user_id, nombre}
 OFFSET_PATH = "./data/telegram_offset.json"   # offset de get_updates
 USERS_PATH = "./data/telegram_users.json"     # {autorizados, pendientes, avisados}
+PETICIONES_PATH = "./data/peticiones.json"    # peticiones de funciones a relatar
 FORCE_PATH = "./data/.force_cycle"            # flag para ciclo inmediato
 
 # nombre corto -> dominio del portal
@@ -257,7 +258,7 @@ AYUDA = ("Puedes hablarme normal. Entiendo cosas como:\n"
 def ejecutar(tb, chat_id, accion, params, cfg, nivel="owner"):
     """Aplica la accion sobre cfg (persistiendo) y responde en chat_id."""
     if accion in ("usuario_add", "usuario_del", "usuario_rechaza") \
-            and nivel not in ("owner", "canal"):
+            and nivel not in ("owner", "canal", "admin"):
         tb.send_message(chat_id, "Eso solo puede hacerlo el dueño 👑.")
         return
     if accion == "ayuda":
@@ -398,8 +399,21 @@ def nivel_acceso(msg, cfg):
         return "sin_owner", uid
     if uid == owner.get("user_id"):
         return "owner", uid
-    if resolver_ref(uid, cargar_usuarios()["autorizados"]):
-        return "user", uid
+    users = cargar_usuarios()
+    encontrado = resolver_ref(uid, users["autorizados"])
+    if not encontrado:
+        # preautorizado por @username sin id: se vincula en su primer mensaje
+        uname = getattr(msg.from_user, "username", "") or ""
+        if uname:
+            candidato = resolver_ref("@" + uname, users["autorizados"])
+            if candidato and not candidato.get("user_id"):
+                candidato["user_id"] = uid
+                candidato["nombre"] = (getattr(msg.from_user, "first_name", "")
+                                       or "")
+                guardar_usuarios(users)
+                encontrado = candidato
+    if encontrado:
+        return ("admin" if encontrado.get("rol") == "admin" else "user"), uid
     return None, uid
 
 
@@ -535,13 +549,31 @@ def texto_usuarios():
     if u["autorizados"]:
         lineas.append("✅ Autorizados:")
         for a in u["autorizados"]:
+            rol = " (admin)" if a.get("rol") == "admin" else ""
             lineas.append(f"• {a.get('nombre') or '?'} "
-                          f"(@{a.get('username') or '-'}, id {a.get('user_id')})")
+                          f"(@{a.get('username') or '-'}, "
+                          f"id {a.get('user_id') or 'pendiente de entrar'}){rol}")
     else:
         lineas.append("Sin usuarios autorizados.")
     if u["pendientes"]:
         lineas.append(f"⏳ Pendientes: {len(u['pendientes'])}")
     return "\n".join(lineas)
+
+
+def anotar_peticion(msg):
+    """Texto no-comando de alguien con acceso = peticion de funcion nueva.
+    Se guarda para que el equipo la recoja y la convierta en PR."""
+    try:
+        peticiones = _load_json(PETICIONES_PATH, [])
+    except Exception:
+        peticiones = []
+    peticiones.append({"ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                       "de_id": msg.from_user.id,
+                       "de_nombre": getattr(msg.from_user, "first_name", "") or "",
+                       "de_username": getattr(msg.from_user, "username", "") or "",
+                       "texto": msg.text})
+    with open(PETICIONES_PATH, "w") as f:
+        json.dump(peticiones, f, ensure_ascii=False, indent=2)
 
 
 def bucle_telegram(token, cfg):
@@ -567,6 +599,13 @@ def bucle_telegram(token, cfg):
                         gestionar_desconocido(tb, msg)
                     continue
                 accion, params = parse_comando(msg.text)
+                if accion == "desconocido" and nivel in ("owner", "user",
+                                                         "admin"):
+                    anotar_peticion(msg)
+                    tb.send_message(msg.chat.id,
+                                    "Se lo paso 🤝. Si era una orden, escribe "
+                                    "«ayuda» para ver las que entiendo.")
+                    continue
                 ejecutar(tb, msg.chat.id, accion, params, cfg, nivel)
             if updates:
                 with open(OFFSET_PATH, "w") as f:
