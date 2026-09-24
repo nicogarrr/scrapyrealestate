@@ -292,6 +292,67 @@ def write_status(portal_counts, sent_new, sent_drops):
         logger.warning(f'NO SE PUDO ESCRIBIR status.json: {e}')
 
 
+
+ZONAS_PATH = "./data/zonas.json"
+ZONAS_MIN_MUESTRAS = 15   # por debajo no anotamos: poca fiabilidad
+ZONAS_MAX_MUESTRAS = 300  # muestras €/m² guardadas por ciudad (rotación)
+
+
+def load_zonas():
+    try:
+        with open(ZONAS_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_zonas(z):
+    with open(ZONAS_PATH, "w") as f:
+        json.dump(z, f)
+
+
+def norm_town(town):
+    return re.sub(r'[^a-z0-9áéíóúñ]', '', str(town).lower())
+
+
+def update_zonas(zonas, price, m2, town):
+    """Acumula €/m² por ciudad (solo datos sanos)."""
+    if not (isinstance(price, int) and isinstance(m2, int) and m2 >= 20 and price >= 5000):
+        return
+    t = norm_town(town)
+    if not t:
+        return
+    eurm2 = round(price / m2)
+    if not (100 <= eurm2 <= 10000):
+        return
+    e = zonas.setdefault(t, {"samples": []})
+    e["samples"].append(eurm2)
+    if len(e["samples"]) > ZONAS_MAX_MUESTRAS:
+        e["samples"] = e["samples"][-ZONAS_MAX_MUESTRAS:]
+
+
+def zona_tag(zonas, price, m2, town):
+    """Etiqueta de zona por €/m² vs mediana de la ciudad. Anota, nunca excluye."""
+    if not (isinstance(price, int) and isinstance(m2, int) and m2 > 0):
+        return ''
+    t = norm_town(town)
+    e = zonas.get(t)
+    if not e or len(e["samples"]) < ZONAS_MIN_MUESTRAS:
+        return ''
+    samples = sorted(e["samples"])
+    med = samples[len(samples) // 2]
+    if med <= 0:
+        return ''
+    eurm2 = price / m2
+    diff = round((eurm2 - med) / med * 100)
+    town_c = str(town).strip()
+    if diff <= -20:
+        return f"🔥 {abs(diff)}% bajo la media de {town_c} ({med}€/m²) - posible chollo"
+    if diff >= 20:
+        return f"💎 {diff}% sobre la media de {town_c} ({med}€/m²) - zona cotizada"
+    return f"≈ media de {town_c} ({med}€/m²)"
+
+
 def make_sig(price, m2, town, rooms, title):
     # Firma para dedup entre portales. Conservadora: exige precio+m2+ciudad+hab
     # iguales y buen solape de tokens del título.
@@ -322,6 +383,7 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
     Dedup 100% local, sin BD. Devuelve (nuevas enviadas, bajadas enviadas)."""
     tb = telebot.TeleBot(get_bot_token())
     ids = load_ids()
+    zonas = load_zonas()
     new_urls = []
     sent_drops = 0
     historic_sigs = [v.get("sig") for v in ids.values() if v.get("sig")]
@@ -360,6 +422,7 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
         m2_digits = ''.join(char for char in str(flat.get('m2', '')) if char.isdecimal())
         m2 = int(m2_digits) if m2_digits else 0
         m2_tg = f'{m2}m²' if m2 else ''
+        update_zonas(zonas, price, m2, town)
 
         try:
             within_range = (int(max_price) >= int(price) >= int(min_price)
@@ -380,6 +443,7 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
                             tg_chatID,
                             f"🔻 <b>BAJADA: {old_price}€ → {price}€</b> [{m2_tg}]\n"
                             f"{html.escape(title)[:90]}\n"
+                            f"{zona_tag(zonas, price, m2, town)}\n"
                             f"{html.escape(href)}",
                             parse_mode='HTML')
                         sent_drops += 1
@@ -419,6 +483,7 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
                     f"<b>{price_str}</b> [{m2_tg}] → {avg_price_m2}€/m²\n"
                     f"{html.escape(title)[:90]}\n"
                     f"{html.escape(zone)}\n"
+                    f"{zona_tag(zonas, price, m2, town)}\n"
                     f"{html.escape(href)}",
                     parse_mode='HTML')
             except telebot.apihelper.ApiTelegramException as e:
@@ -426,6 +491,7 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
             time.sleep(3.05)
 
     save_ids(ids)
+    save_zonas(zonas)
 
     # solo a INFO si hay nuevas; si no, a DEBUG
     if new_urls or sent_drops:
