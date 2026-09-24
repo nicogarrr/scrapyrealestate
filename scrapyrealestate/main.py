@@ -427,6 +427,30 @@ def geo_tag(geo, title, town):
     return f"🌳 {e['parks']} parques · 🍺 {e['night']} bares/fiesta (400m)"
 
 
+
+# Criminalidad municipal 2024 (ene-sep), Balance de Criminalidad del Ministerio
+# del Interior (hechos conocidos, criminalidad convencional + robos con fuerza
+# en domicilios, variación % interanual). Fuente:
+# https://estadisticasdecriminalidad.ses.mir.es/publico/portalestadistico/
+# Solo existe a nivel municipio (>20.000 hab.); por barrio no hay dato en España.
+SEGURIDAD_2024 = {
+    "gijón":    {"total": "5.443", "var": "+1%",  "dom": "93",  "domvar": "-49%"},
+    "oviedo":   {"total": "4.164", "var": "+4%",  "dom": "108", "domvar": "-30%"},
+    "avilés":   {"total": "1.496", "var": "+3%",  "dom": "57",  "domvar": "+11%"},
+    "langreo":  {"total": "848",   "var": "-8%",  "dom": "43",  "domvar": "-8%"},
+    "mieres":   {"total": "647",   "var": "-10%", "dom": "15",  "domvar": "-53%"},
+    "castrillón": {"total": "319", "var": "+15%", "dom": "8",   "domvar": "-27%"},
+}
+
+
+def seguridad_tag(town):
+    e = SEGURIDAD_2024.get(norm_town(town))
+    if not e:
+        return ''
+    return (f"🛡️ {town.strip()}: {e['total']} infracciones ({e['var']}) · "
+            f"robos en vivienda {e['dom']} ({e['domvar']}) - Min. Interior 2024")
+
+
 def make_sig(price, m2, town, rooms, title):
     # Firma para dedup entre portales. Conservadora: exige precio+m2+ciudad+hab
     # iguales y buen solape de tokens del título.
@@ -521,7 +545,9 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
                             f"{html.escape(title)[:90]}\n"
                             f"{zona_tag(zonas, price, m2, town)}\n"
                     f"{geo_tag(geo, title, town)}\n"
+                    f"{seguridad_tag(town)}\n"
                             f"{geo_tag(geo, title, town)}\n"
+                            f"{seguridad_tag(town)}\n"
                             f"{html.escape(href)}",
                             parse_mode='HTML')
                         sent_drops += 1
