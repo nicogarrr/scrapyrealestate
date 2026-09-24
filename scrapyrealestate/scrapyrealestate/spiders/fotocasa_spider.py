@@ -1,6 +1,7 @@
 import scrapy, logging, json
 from bs4 import BeautifulSoup
 from scrapyrealestate.items import ScrapyrealestateItem
+from scrapyrealestate.parsing import extract_fotocasa_items, extract_listing_id, has_elevator_filter
 from scrapy_playwright.page import PageMethod
 
 
@@ -39,17 +40,17 @@ class FotocasaSpider(scrapy.Spider):
         else:
             tipo = ''
 
-        # Fotocasa migró a clases CSS utilitarias; parseamos el JSON embebido
-        # (initialSearch.result.realEstates), que es mucho más estable.
+        # Fotocasa usa resultsV2.items en la versión actual y realEstates
+        # como fallback para respuestas antiguas/fixtures.
         script = soup.find('script', {'id': '__initial_props__'})
         if script is None:
             logging.warning('FOTOCASA: no se encontró el JSON __initial_props__ '
-                            '(posible bloqueo anti-bot)')
+                            '(posible bloqueo o cambio de página)')
             return
 
         try:
             payload = json.loads(script.string or script.get_text())
-            real_estates = payload['initialSearch']['result']['realEstates']
+            real_estates = extract_fotocasa_items(payload)
         except (ValueError, KeyError, TypeError) as e:
             logging.warning(f'FOTOCASA: no se pudo parsear el JSON ({e})')
             return
@@ -69,18 +70,21 @@ class FotocasaSpider(scrapy.Spider):
             detail = flat.get('detail') or {}
             href = detail.get('es-ES', '') if isinstance(detail, dict) else ''
 
-            items['id'] = flat.get('id', '')
+            items['id'] = str(flat.get('propertyId') or flat.get('id') or extract_listing_id('fotocasa', href))
             items['title'] = flat.get('description', '') or flat.get('promotionTitle', '')
             items['price'] = flat.get('price', '')
             items['rooms'] = feats.get('rooms', '')
             items['m2'] = feats.get('surface', '')
             items['floor'] = feats.get('floor', '')
+            items['elevator'] = True if has_elevator_filter(self.start_urls) or 'elevator' in feats else None
             items['town'] = address.get('municipality', '')
             items['neighbour'] = address.get('neighborhood', '')
             items['street'] = ''
             items['number'] = ''
             items['type'] = tipo
             items['href'] = (default_url + href) if href else ''
+            if 'type' in items:
+                items['type'] = items['type']
             items['site'] = 'fotocasa'
 
             yield items

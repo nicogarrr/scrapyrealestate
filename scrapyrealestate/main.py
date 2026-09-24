@@ -6,6 +6,9 @@ from os import path
 from art import *
 from fake_useragent import UserAgent
 
+from scrapyrealestate.ingest import listing_key, numeric_price
+from scrapyrealestate.parsing import append_url_fragment
+
 
 __license__ = "GPL"
 __version__ = "3.0.0"
@@ -185,18 +188,18 @@ def get_urls(data):
         sys.exit()
 
     start_urls_idealista = data.get('url_idealista', [])
-    start_urls_idealista = [url + '?ordenado-por=fecha-publicacion-desc' for url in start_urls_idealista]
+    start_urls_idealista = [append_url_fragment(url, '?ordenado-por=fecha-publicacion-desc') for url in start_urls_idealista]
 
     start_urls_pisoscom = data.get('url_pisoscom', [])
-    start_urls_pisoscom = [url + 'fecharecientedesde-desc/' for url in start_urls_pisoscom]
+    start_urls_pisoscom = [append_url_fragment(url, 'fecharecientedesde-desc/') for url in start_urls_pisoscom]
 
     start_urls_fotocasa = data.get('url_fotocasa', [])
 
     start_urls_habitaclia = data.get('url_habitaclia', [])
-    start_urls_habitaclia = [url + '?ordenar=mas_recientes' for url in start_urls_habitaclia]
+    start_urls_habitaclia = [append_url_fragment(url, '?ordenar=mas_recientes') for url in start_urls_habitaclia]
 
     start_urls_yaencontre = data.get('url_yaencontre', [])
-    start_urls_yaencontre = [url + '/o-recientes' for url in start_urls_yaencontre]
+    start_urls_yaencontre = [append_url_fragment(url, '/o-recientes') for url in start_urls_yaencontre]
 
     urls['start_urls_idealista'] = start_urls_idealista
     urls['start_urls_pisoscom'] = start_urls_pisoscom
@@ -472,37 +475,38 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
 
     for flat in data_json:
         try:
-            flat_id = str(int(flat['id']))
-        except (KeyError, ValueError, TypeError):
+            flat_key = listing_key(flat)
+        except (KeyError, TypeError, ValueError):
             continue
 
+        # Historically ids.json used raw numeric IDs. Keep that key format
+        # compatible, while the normalized key is used for new persistence.
+        flat_id = str(flat.get("id") or flat_key)
         price_str = str(flat.get('price', ''))
         href = flat.get('href', '')
         title = str(flat.get('title', '') or '')
         town = str(flat.get('town', '') or '')
         rooms = str(flat.get('rooms', '') or '')
 
-        # precio a entero (solo dígitos); si no, dejamos el texto
-        try:
-            price = int(''.join(char for char in price_str if char.isdecimal()))
-        except (ValueError, TypeError):
-            price = 0
-        if price == 0:
-            price = price_str
-
-        # m2 a entero para el €/m²
-        m2_digits = ''.join(char for char in str(flat.get('m2', '')) if char.isdecimal())
-        m2 = int(m2_digits) if m2_digits else 0
+        price = numeric_price(price_str)
+        m2 = numeric_price(flat.get('m2', ''))
         m2_tg = f'{m2}m²' if m2 else ''
         update_zonas(zonas, price, m2, town)
 
+        if price is None:
+            continue
+
         try:
-            within_range = (int(max_price) >= int(price) >= int(min_price)
-                            or (int(max_price) == 0 and int(price) >= int(min_price)))
+            within_range = (int(max_price) >= price >= int(min_price)
+                            or (int(max_price) == 0 and price >= int(min_price)))
         except (ValueError, TypeError):
             within_range = False
 
-        entry = ids.get(flat_id)
+        # Prefer the normalized key, but look up the legacy raw ID during
+        # migration so existing users do not receive duplicate alerts.
+        entry = ids.get(flat_key)
+        if entry is None:
+            entry = ids.get(flat_id)
         if entry is not None:
             # conocido: detectamos bajada de precio (p.ej. entra en presupuesto)
             old_price = entry.get("price")
@@ -530,7 +534,7 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
 
         # nuevo: dedup inter-portal por firma (precio+m2+ciudad+hab+título)
         sig = make_sig(price, m2, town, rooms, title)
-        ids[flat_id] = {"price": price if isinstance(price, int) else None,
+        ids[flat_key] = {"price": price,
                         "ts": int(time.time()),
                         "portal": flat.get('site', ''),
                         "sig": sig}
@@ -582,7 +586,8 @@ def run_spider(spider_name, scrapy_log, out_file, start_url):
     # Lista de args (sin shell): las URLs con '?'/'&' no rompen la línea de comandos.
     cmd = ["scrapy", "crawl", "-L", scrapy_log, spider_name,
            "-o", out_file, "-a", f"start_urls={start_url}"]
-    subprocess.run(cmd, check=False)
+    result = subprocess.run(cmd, check=False)
+    return result.returncode
 
 
 def page2_url(portal_name_url, url):
