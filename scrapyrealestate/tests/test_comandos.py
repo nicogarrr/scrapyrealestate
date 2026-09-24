@@ -97,3 +97,26 @@ def test_anotar_peticion(tmp_path, monkeypatch):
     assert len(datos) == 2
     assert datos[0]["texto"] == "mete un filtro por terraza"
     assert datos[0]["de_username"] == "rodrigarrr"
+
+
+def test_enviar_respuestas(tmp_path, monkeypatch):
+    import json as _json
+    dest = tmp_path / "respuestas.json"
+    monkeypatch.setattr(comandos, "RESPUESTAS_PATH", str(dest))
+    dest.write_text(_json.dumps([{"para_id": 1, "texto": "hola"},
+                                 {"para_id": 2, "texto": "adios"}]))
+
+    class TB:
+        def __init__(self):
+            self.enviados = []
+
+        def send_message(self, a, b):
+            self.enviados.append((a, b))
+
+    tb = TB()
+    assert comandos.enviar_respuestas(tb) == 2
+    assert tb.enviados == [(1, "hola"), (2, "adios")]
+    assert _json.loads(dest.read_text()) == []
+    # archivo inexistente: no pasa nada
+    dest.unlink()
+    assert comandos.enviar_respuestas(tb) == 0
