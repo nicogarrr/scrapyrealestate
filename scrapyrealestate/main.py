@@ -1,6 +1,7 @@
 #!/usr/bin/python3
-import re
+import re, html
 import sys, subprocess, telebot, time, os.path, os, logging, urllib.request, urllib.error, json, random
+from datetime import datetime
 from os import path
 from art import *
 from fake_useragent import UserAgent
@@ -209,12 +210,122 @@ def get_urls(data):
     return urls
 
 
+
+# --- Mejoras fork Nico: ids con metadatos, salud de portales, status ---
+
+IDS_PATH = "./data/ids.json"
+HEALTH_PATH = "./data/health.json"
+STATUS_PATH = "./data/status.json"
+MAX_IDS = 100000          # cap de ids.json (se purgan los más antiguos)
+HEALTH_FAIL_THRESHOLD = 6  # ciclos seguidos sin resultados antes de avisar (~1,5h a 15 min)
+
+SIG_STOPWORDS = {"piso", "en", "venta", "de", "la", "el", "calle", "avenida",
+                 "av", "avda", "atico", "ático", "duplex", "dúplex", "estudio",
+                 "apartamento", "planta", "bajo", "urb", "urbanizacion"}
+
+
+def load_ids():
+    # Formato nuevo: {id: {price, ts, portal, sig}}. Migra la lista antigua.
+    try:
+        with open(IDS_PATH) as f:
+            raw = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+    if isinstance(raw, list):
+        return {str(i): {"price": None, "ts": 0, "portal": "", "sig": None}
+                for i in raw}
+    return raw
+
+
+def save_ids(ids):
+    if len(ids) > MAX_IDS:
+        ids = dict(sorted(ids.items(),
+                          key=lambda kv: kv[1].get("ts", 0),
+                          reverse=True)[:MAX_IDS])
+    with open(IDS_PATH, "w") as f:
+        json.dump(ids, f)
+
+
+def load_health():
+    try:
+        with open(HEALTH_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def update_health(portal, ok, tb, tg_chatID):
+    # Avisa por el canal (una vez) si un portal encadena fallos; se resetea al recuperarse.
+    h = load_health()
+    e = h.get(portal, {"fail": 0, "alerted": False})
+    if ok:
+        e = {"fail": 0, "alerted": False}
+    else:
+        e["fail"] += 1
+        if e["fail"] >= HEALTH_FAIL_THRESHOLD and not e["alerted"]:
+            try:
+                tb.send_message(
+                    tg_chatID,
+                    f"⚠️ <b>{portal}</b> lleva {e['fail']} ciclos sin dar "
+                    f"resultados (posible bloqueo anti-bot o cambio de la web). "
+                    f"Revisar: docker logs flats-bot-asturias",
+                    parse_mode='HTML')
+            except Exception as ex:
+                logger.error(f'ERROR ENVIANDO AVISO DE SALUD: {ex}')
+            e["alerted"] = True
+    h[portal] = e
+    with open(HEALTH_PATH, "w") as f:
+        json.dump(h, f)
+    return h
+
+
+def write_status(portal_counts, sent_new, sent_drops):
+    # Estado del último ciclo para inspección por SSH (no hay web expuesta).
+    try:
+        st = {"last_cycle": datetime.now().isoformat(timespec="seconds"),
+              "portal_counts": portal_counts,
+              "health": load_health(),
+              "sent_new": sent_new, "sent_drops": sent_drops}
+        with open(STATUS_PATH, "w") as f:
+            json.dump(st, f, ensure_ascii=False, indent=1)
+    except OSError as e:
+        logger.warning(f'NO SE PUDO ESCRIBIR status.json: {e}')
+
+
+def make_sig(price, m2, town, rooms, title):
+    # Firma para dedup entre portales. Conservadora: exige precio+m2+ciudad+hab
+    # iguales y buen solape de tokens del título.
+    if not isinstance(price, int) or not m2:
+        return None
+    town_n = re.sub(r'[^a-z0-9áéíóúñ]', '', str(town).lower())
+    rooms_n = ''.join(c for c in str(rooms) if c.isdecimal())
+    tokens = sorted(set(re.sub(r'[^a-z0-9áéíóúñ ]', '', str(title).lower()).split())
+                    - SIG_STOPWORDS)
+    if not tokens:
+        return None
+    return {"k": [price, m2, town_n, rooms_n], "tt": tokens}
+
+
+def sigs_match(a, b):
+    if not a or not b or a["k"] != b["k"]:
+        return False
+    ta, tb_ = set(a["tt"]), set(b["tt"])
+    if not ta or not tb_:
+        return False
+    return len(ta & tb_) / min(len(ta), len(tb_)) >= 0.6
+
+
 def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
                     tg_chatID, telegram_msg, logger):
-    '''Detecta viviendas no vistas (contra data/ids.json) y envía por Telegram
-    las que entran en el rango de precio. Dedup 100% local, sin BD.'''
+    """Detecta viviendas no vistas (contra data/ids.json) y bajadas de precio,
+    y envía por Telegram las que entran en el rango de precio.
+    Dedup 100% local, sin BD. Devuelve (nuevas enviadas, bajadas enviadas)."""
     tb = telebot.TeleBot(get_bot_token())
+    ids = load_ids()
     new_urls = []
+    sent_drops = 0
+    historic_sigs = [v.get("sig") for v in ids.values() if v.get("sig")]
+    accepted_sigs = []
 
     try:
         with open(json_file_name) as json_file:
@@ -225,46 +336,30 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
     if len(data_json) == 0:
         logger.warning(f'SIN DATOS EN EL JSON {scrapy_rs_name.upper()}')
 
-    try:
-        with open("./data/ids.json", "r") as outfile:
-            ids_file = json.load(outfile)
-    except (FileNotFoundError, json.JSONDecodeError):
-        ids_file = []
-    new_ids_file = []
-
     for flat in data_json:
         try:
-            flat_id = int(flat['id'])
+            flat_id = str(int(flat['id']))
         except (KeyError, ValueError, TypeError):
             continue
 
-        price_str = flat.get('price', '')
+        price_str = str(flat.get('price', ''))
         href = flat.get('href', '')
+        title = str(flat.get('title', '') or '')
+        town = str(flat.get('town', '') or '')
+        rooms = str(flat.get('rooms', '') or '')
 
         # precio a entero (solo dígitos); si no, dejamos el texto
         try:
-            price = int(''.join(char for char in price_str if char.isdigit()))
+            price = int(''.join(char for char in price_str if char.isdecimal()))
         except (ValueError, TypeError):
             price = 0
         if price == 0:
             price = price_str
 
         # m2 a entero para el €/m²
-        try:
-            m2_digits = ''.join(char for char in flat.get('m2', '') if char.isdigit())
-            m2 = int(m2_digits) if m2_digits else 0
-            m2_tg = f'{m2}m²'
-        except (ValueError, TypeError):
-            m2 = flat.get('m2', 0) or 0
-            m2_tg = f'{m2}m²' if m2 else ''
-
-        if flat_id in ids_file:
-            continue
-        new_ids_file.append(flat_id)
-
-        # "A consultar": lo damos por visto pero no lo enviamos
-        if price in ('Aconsultar', 'A consultar'):
-            continue
+        m2_digits = ''.join(char for char in str(flat.get('m2', '')) if char.isdecimal())
+        m2 = int(m2_digits) if m2_digits else 0
+        m2_tg = f'{m2}m²' if m2 else ''
 
         try:
             within_range = (int(max_price) >= int(price) >= int(min_price)
@@ -272,29 +367,74 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
         except (ValueError, TypeError):
             within_range = False
 
+        entry = ids.get(flat_id)
+        if entry is not None:
+            # conocido: detectamos bajada de precio (p.ej. entra en presupuesto)
+            old_price = entry.get("price")
+            entry["ts"] = int(time.time())
+            if isinstance(old_price, int) and isinstance(price, int) and price != old_price:
+                entry["price"] = price
+                if price < old_price and within_range and telegram_msg:
+                    try:
+                        tb.send_message(
+                            tg_chatID,
+                            f"🔻 <b>BAJADA: {old_price}€ → {price}€</b> [{m2_tg}]\n"
+                            f"{html.escape(title)[:90]}\n"
+                            f"{html.escape(href)}",
+                            parse_mode='HTML')
+                        sent_drops += 1
+                    except telebot.apihelper.ApiTelegramException as e:
+                        logger.error(f'ERROR ENVIANDO A TELEGRAM: {e}')
+                    time.sleep(3.05)
+            elif isinstance(price, int) and not isinstance(old_price, int):
+                entry["price"] = price
+            continue
+
+        # nuevo: dedup inter-portal por firma (precio+m2+ciudad+hab+título)
+        sig = make_sig(price, m2, town, rooms, title)
+        ids[flat_id] = {"price": price if isinstance(price, int) else None,
+                        "ts": int(time.time()),
+                        "portal": flat.get('site', ''),
+                        "sig": sig}
+
+        # "A consultar": lo damos por visto pero no lo enviamos
+        if price in ('Aconsultar', 'A consultar'):
+            continue
+
+        if sig and any(sigs_match(sig, s2) for s2 in accepted_sigs + historic_sigs):
+            logger.info(f'DUP INTER-PORTAL (mismo inmueble en otro portal): {href}')
+            continue
+
         if within_range and telegram_msg:
             new_urls.append(href)
+            accepted_sigs.append(sig)
             try:
-                avg_price_m2 = '%.2f' % (price / float(m2))
+                avg_price_m2 = '%.2f' % (price / float(m2)) if m2 else ''
             except (ValueError, ZeroDivisionError, TypeError):
                 avg_price_m2 = ''
+            zone = ' · '.join(x for x in (town.strip(), rooms.strip()) if x)
             try:
                 tb.send_message(
                     tg_chatID,
-                    f"<b>{price_str}</b> [{m2_tg}] → {avg_price_m2}€/m²\n{href}",
+                    f"<b>{price_str}</b> [{m2_tg}] → {avg_price_m2}€/m²\n"
+                    f"{html.escape(title)[:90]}\n"
+                    f"{html.escape(zone)}\n"
+                    f"{html.escape(href)}",
                     parse_mode='HTML')
             except telebot.apihelper.ApiTelegramException as e:
                 logger.error(f'ERROR ENVIANDO A TELEGRAM: {e}')
             time.sleep(3.05)
 
-    with open("./data/ids.json", "w") as outfile:
-        json.dump(ids_file + new_ids_file, outfile)
+    save_ids(ids)
 
     # solo a INFO si hay nuevas; si no, a DEBUG
-    if new_urls:
-        logger.info(f"NUEVAS: {len(new_urls)} | TOTAL: {len(data_json)} -> {new_urls}")
+    if new_urls or sent_drops:
+        logger.info(f"NUEVAS: {len(new_urls)} | BAJADAS: {sent_drops} | "
+                    f"TOTAL: {len(data_json)} -> {new_urls}")
     else:
         logger.debug(f"NUEVAS: 0 | TOTAL: {len(data_json)}")
+
+    return len(new_urls), sent_drops
 
 
 def run_spider(spider_name, scrapy_log, out_file, start_url):
@@ -304,11 +444,30 @@ def run_spider(spider_name, scrapy_log, out_file, start_url):
     subprocess.run(cmd, check=False)
 
 
+def page2_url(portal_name_url, url):
+    # Página 2 por portal (mejor esfuerzo: un fallo aquí NO cuenta para la salud).
+    if portal_name_url == 'idealista.com':
+        return url + 'pagina-2.htm?ordenado-por=fecha-publicacion-desc'
+    if portal_name_url == 'pisos.com':
+        return url + '/fecharecientedesde-desc/pagina-2/'
+    if portal_name_url == 'fotocasa.es':
+        if '?' in url:
+            base, q = url.split('?', 1)
+            return base + '/2?' + q
+        return url + '/2'
+    if portal_name_url == 'yaencontre.com':
+        return url + '/o-recientes/pagina-2'
+    if portal_name_url == 'habitaclia.com':
+        return url + '?ordenar=mas_recientes&pagina=2'
+    return None
+
+
 def scrap_realestate(telegram_msg):
     scrapy_rs_name = data['scrapy_rs_name'].replace("-", "_")
     scrapy_log = data['log_level_scrapy'].upper()
     proxy_idealista = data['proxy_idealista']
     out_file = f"./data/{scrapy_rs_name}.json"
+    tb = telebot.TeleBot(get_bot_token())
 
     # todas las claves 'url_*' de la config
     urls = []
@@ -325,6 +484,8 @@ def scrap_realestate(telegram_msg):
         logger.error("SPIDERS NOT DETECTED")
         sys.exit()
 
+    portal_counts = {}
+
     for url in urls_mixed:
         if url == '':
             continue
@@ -337,51 +498,77 @@ def scrap_realestate(telegram_msg):
             portal_name = portal_url
             portal_name_url = ''
 
-        logger.debug(f"SCRAPING PORTAL {portal_name_url} FROM {scrapy_rs_name}...")
         if portal_name_url == 'idealista.com':
-            url_last_flats = url + '?ordenado-por=fecha-publicacion-desc'
-            if proxy_idealista == 'on':
-                logger.debug('IDEALISTA PROXY ACTIVATED')
-                run_spider('idealista_proxy', scrapy_log, out_file, url_last_flats)
-            else:
-                run_spider('idealista', scrapy_log, out_file, url_last_flats)
+            spider = 'idealista_proxy' if proxy_idealista == 'on' else 'idealista'
+            page1 = url + '?ordenado-por=fecha-publicacion-desc'
         elif portal_name_url == 'pisos.com':
-            url_last_flats = url + '/fecharecientedesde-desc/'
-            run_spider('pisoscom', scrapy_log, out_file, url_last_flats)
+            spider, page1 = 'pisoscom', url + '/fecharecientedesde-desc/'
         elif portal_name_url == 'fotocasa.es':
-            run_spider('fotocasa', scrapy_log, out_file, url)
+            spider, page1 = 'fotocasa', url
         elif portal_name_url == 'habitaclia.com':
-            url_last_flats = url + '?ordenar=mas_recientes'
-            run_spider('habitaclia', scrapy_log, out_file, url_last_flats)
+            spider, page1 = 'habitaclia', url + '?ordenar=mas_recientes'
         elif portal_name_url == 'yaencontre.com':
-            url_last_flats = url + '/o-recientes'
-            run_spider('yaencontre', scrapy_log, out_file, url_last_flats)
+            spider, page1 = 'yaencontre', url + '/o-recientes'
+        else:
+            continue
 
-        logger.debug(f"CRAWLED {portal_name.upper()}")
+        if proxy_idealista == 'on' and portal_name_url == 'idealista.com':
+            logger.debug('IDEALISTA PROXY ACTIVATED')
 
-    # Scrapy con -o concatena varios crawls en el mismo fichero; unimos las partes ('][').
-    logger.debug(f"EDITING {out_file}...")
-    try:
-        with open(out_file, 'r') as file:
-            filedata = file.read()
-    except FileNotFoundError:
-        logger.warning(f"NO SE GENERÓ {out_file} (NINGÚN RESULTADO)")
+        logger.debug(f"SCRAPING PORTAL {portal_name_url} FROM {scrapy_rs_name}...")
+
+        # cada portal/página va a su propio tmp: permite salud por portal y merge limpio
+        portal_items = 0
+        tmp1 = f"./data/.tmp_{portal_name}_p1.json"
+        os.path.exists(tmp1) and os.remove(tmp1)
+        run_spider(spider, scrapy_log, tmp1, page1)
+        portal_items += count_items(tmp1)
+
+        p2 = page2_url(portal_name_url, url)
+        if p2:
+            tmp2 = f"./data/.tmp_{portal_name}_p2.json"
+            os.path.exists(tmp2) and os.remove(tmp2)
+            run_spider(spider, scrapy_log, tmp2, p2)
+            portal_items += count_items(tmp2)
+
+        portal_counts[portal_name_url] = portal_items
+        update_health(portal_name_url, portal_items > 0, tb, data['telegram_chatuserID'])
+        logger.debug(f"CRAWLED {portal_name.upper()} ({portal_items} items)")
+
+    # merge de todos los tmp en el fichero del ciclo
+    merged = []
+    for f in os.listdir('./data'):
+        if f.startswith('.tmp_') and f.endswith('.json'):
+            merged += load_items(f'./data/{f}')
+            os.remove(f'./data/{f}')
+    with open(out_file, 'w') as file:
+        json.dump(merged, file)
+
+    if not merged:
+        logger.warning(f"NO SE GENERARON RESULTADOS EN ESTE CICLO")
         return
 
-    filedata = filedata.replace('\n][', ',')
-    filedata = re.sub('\n,\n', '', filedata)
-    filedata = re.sub(',\n\n', '', filedata)
-    filedata = re.sub(',\n]', ']', filedata)
-    with open(out_file, 'w') as file:
-        file.write(filedata)
+    sent_new, sent_drops = check_new_flats(out_file,
+                                           scrapy_rs_name,
+                                           data['min_price'],
+                                           data['max_price'],
+                                           data['telegram_chatuserID'],
+                                           telegram_msg,
+                                           logger)
+    write_status(portal_counts, sent_new, sent_drops)
 
-    check_new_flats(out_file,
-                    scrapy_rs_name,
-                    data['min_price'],
-                    data['max_price'],
-                    data['telegram_chatuserID'],
-                    telegram_msg,
-                    logger)
+
+def count_items(path):
+    return len(load_items(path))
+
+
+def load_items(path):
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        return d if isinstance(d, list) else []
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
 
 
 def update_useragent():

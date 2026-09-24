@@ -23,6 +23,17 @@ para avisar en un canal de Telegram de pisos **en venta en Asturias, hasta
   máximo local (100.000 €). Habitaclia fuera: apenas tiene oferta en Asturias.
   Ciclo cada ~15 min. El primer ciclo solo registra lo existente
   (`send_first: False`): avisa a partir de las novedades, sin flood inicial.
+- **Aviso de bajadas de precio**: ids.json guarda el precio de cada anuncio;
+  si uno conocido baja y entra en rango, llega aviso "BAJADA" al canal.
+- **Salud de portales**: si un portal encadena 6 ciclos sin resultados
+  (bloqueo anti-bot o cambio de web), avisa por el canal una vez.
+- **Mensajes más ricos**: precio, m², €/m², título, ciudad y habitaciones.
+- **Paginación**: página 2 de cada portal por ciclo (mejor esfuerzo; un fallo
+  ahí no cuenta como caída del portal).
+- **Dedup entre portales**: el mismo piso en Idealista y Fotocasa se envía una
+  vez (firma conservadora: precio+m²+ciudad+habitaciones+título).
+- **Cap y estado**: ids.json se capa a 100k entradas; `data/status.json` lleva
+  el resumen del último ciclo (no hay web expuesta en producción).
 
 ## Despliegue (servidor Oracle, docker)
 
