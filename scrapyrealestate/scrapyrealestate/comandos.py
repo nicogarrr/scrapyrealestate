@@ -111,9 +111,13 @@ def parse_comando(texto):
     m = re.search(r"\b(autoriza|autorizar|aprueba|aprobar|admite)\b\s+(?:a\s+)?(@?[\w]+)", t)
     if m:
         return "usuario_add", {"ref": m.group(2)}
+    if re.search(r"^\s*(autoriza|autorizar|aprueba|aprobar|admite)\s*$", t):
+        return "usuario_add", {"ref": None}   # bare: vale si hay 1 pendiente
     m = re.search(r"\b(rechaza|rechazar|deniega|denegar|bloquea)\b\s+(?:a\s+)?(@?[\w]+)", t)
     if m:
         return "usuario_rechaza", {"ref": m.group(2)}
+    if re.search(r"^\s*(rechaza|rechazar|deniega|denegar|bloquea)\s*$", t):
+        return "usuario_rechaza", {"ref": None}
     if re.search(r"\b(pendientes|solicitudes)\b", t):
         return "pendientes", {}
     if re.search(r"\b(usuarios|autorizados)\b", t):
@@ -460,9 +464,26 @@ def gestionar_desconocido(tb, msg):
                     "al dueño y te aviso aquí mismo si te autoriza.")
 
 
+def _unico_pendiente(tb, chat_id, u, verbo):
+    if len(u["pendientes"]) == 1:
+        return u["pendientes"][0]
+    if not u["pendientes"]:
+        tb.send_message(chat_id, "No hay solicitudes pendientes.")
+    else:
+        tb.send_message(chat_id, f"Hay {len(u['pendientes'])} pendientes: dime "
+                        f"cuál («{verbo} 123456789» o «{verbo} @usuario»).\n"
+                        + texto_pendientes())
+    return None
+
+
 def usuarios_add(tb, chat_id, ref):
     u = cargar_usuarios()
-    encontrado = resolver_ref(ref, u["pendientes"])
+    if ref is None:
+        encontrado = _unico_pendiente(tb, chat_id, u, "autoriza")
+        if not encontrado:
+            return
+    else:
+        encontrado = resolver_ref(ref, u["pendientes"])
     if encontrado:
         u["pendientes"] = [x for x in u["pendientes"] if x is not encontrado]
         if not resolver_ref(encontrado["user_id"], u["autorizados"]):
@@ -477,7 +498,7 @@ def usuarios_add(tb, chat_id, ref):
         except Exception:
             pass
         return
-    r = str(ref).lstrip("@").strip()
+    r = str(ref or "").lstrip("@").strip()
     if r.isdigit():
         if resolver_ref(r, u["autorizados"]):
             tb.send_message(chat_id, "Ese id ya estaba autorizado.")
@@ -518,7 +539,12 @@ def usuarios_quita(tb, chat_id, ref):
 
 def usuarios_rechaza(tb, chat_id, ref):
     u = cargar_usuarios()
-    encontrado = resolver_ref(ref, u["pendientes"])
+    if ref is None:
+        encontrado = _unico_pendiente(tb, chat_id, u, "rechaza")
+        if not encontrado:
+            return
+    else:
+        encontrado = resolver_ref(ref, u["pendientes"])
     if not encontrado:
         tb.send_message(chat_id, f"No hay ninguna solicitud pendiente de {ref}.")
         return

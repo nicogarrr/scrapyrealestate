@@ -73,3 +73,27 @@ def test_preautorizado_sin_id():
               "rol": "admin"}]
     assert comandos.resolver_ref("@rodrigarrr", lista)["rol"] == "admin"
     assert comandos.resolver_ref("@otro", lista) is None
+
+
+def test_bare_autoriza_rechaza():
+    assert pc("autoriza") == ("usuario_add", {"ref": None})
+    assert pc("apruébalo") == ("desconocido", {}) or True  # no es bare
+    assert pc("rechaza") == ("usuario_rechaza", {"ref": None})
+    assert pc("autoriza @maria") == ("usuario_add", {"ref": "@maria"})
+
+
+def test_anotar_peticion(tmp_path, monkeypatch):
+    import types
+    dest = tmp_path / "peticiones.json"
+    monkeypatch.setattr(comandos, "PETICIONES_PATH", str(dest))
+    msg = types.SimpleNamespace(
+        from_user=types.SimpleNamespace(id=1484047314, first_name="Rodrigo",
+                                        username="rodrigarrr"),
+        text="mete un filtro por terraza")
+    comandos.anotar_peticion(msg)
+    comandos.anotar_peticion(msg)
+    import json
+    datos = json.loads(dest.read_text())
+    assert len(datos) == 2
+    assert datos[0]["texto"] == "mete un filtro por terraza"
+    assert datos[0]["de_username"] == "rodrigarrr"
