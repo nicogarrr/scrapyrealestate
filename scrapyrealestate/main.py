@@ -102,7 +102,7 @@ def check_config():
                 portal_url = url.split('/')[2]
                 portal_name = portal_url.split('.')[1]
                 urls_ok_count += 1
-                urls_ok += f' <a href="{url}">{portal_name}</a>    '
+                urls_ok += f'{portal_name} '
 
     if data['telegram_chatuserID'] is None:
         logger.error('EL CHAT ID DE TELEGRAM ESTÁ VACÍO')
@@ -110,17 +110,14 @@ def check_config():
 
     try:
         if data['start_msg'] == 'True':
+            max_txt = 'sin límite' if data['max_price'] == '0' else f"{int(data['max_price']):,}€".replace(',', '.')
             info_message = tb.send_message(
                 data['telegram_chatuserID'],
-                f"<code>LOADING...</code>\n"
-                f"\n"
-                f"<code>scrapyrealestate v{__version__}\n</code>"
-                f"\n"
-                f"<code>REFRESH     <b>{data['time_update']}</b>s</code>\n"
-                f"<code>MIN PRICE   <b>{data['min_price']}€</b></code>\n"
-                f"<code>MAX PRICE   <b>{data['max_price']}€</b> (0 = NO LIMIT)</code>\n"
-                f"<code>URLS        <b>{urls_ok_count}</b>  →   </code>{urls_ok}\n",
-                parse_mode='HTML'
+                f"✅ <b>Bot de pisos activo</b>\n"
+                f"🔄 cada {int(data['time_update'])//60} min · 💰 hasta {max_txt}\n"
+                f"🌐 {urls_ok.strip()}",
+                parse_mode='HTML',
+                disable_web_page_preview=True
             )
         else:
             info_message = tb.send_message(
