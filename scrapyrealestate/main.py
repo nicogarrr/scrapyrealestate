@@ -353,6 +353,80 @@ def zona_tag(zonas, price, m2, town):
     return f"≈ media de {town_c} ({med}€/m²)"
 
 
+
+GEO_PATH = "./data/geo.json"
+GEO_MAX = 2000            # direcciones cacheadas como máximo
+GEO_UA = "flats-bot-asturias/1.0 (bot personal de alertas de pisos)"
+
+
+def load_geo():
+    try:
+        with open(GEO_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_geo(g):
+    if len(g) > GEO_MAX:
+        g = dict(sorted(g.items(), key=lambda kv: kv[1].get("ts", 0),
+                        reverse=True)[:GEO_MAX])
+    with open(GEO_PATH, "w") as f:
+        json.dump(g, f)
+
+
+def geo_tag(geo, title, town):
+    """Cuenta parques y bares/fiesta en 400m (OpenStreetMap). Anota, nunca excluye.
+    Devuelve '' si no se puede geocodificar o falla la red."""
+    import urllib.parse
+    import urllib.request
+    key = norm_town(town) + '|' + re.sub(r'\s+', ' ', str(title).lower().strip())[:80]
+    e = geo.get(key)
+    if e is None:
+        # limpia el título ("Piso en Calle X, Centro" -> "Calle X, Centro")
+        clean = re.sub(r'^(piso|casa|ático|atico|dúplex|duplex|estudio|apartamento|chalet|adosado|vivienda|local|oficina|planta baja|bajo)\s+(en\s+)?',
+                       '', str(title).strip(), flags=re.I)
+        lat = lon = None
+        for q in (f"{clean}, {town}, Asturias, España",
+                  f"{town}, Asturias, España"):  # fallback: centro del concejo
+            try:
+                url = ("https://nominatim.openstreetmap.org/search?format=json&limit=1&q="
+                       + urllib.parse.quote(q))
+                req = urllib.request.Request(url, headers={"User-Agent": GEO_UA})
+                with urllib.request.urlopen(req, timeout=15) as r:
+                    res = json.loads(r.read().decode())
+                if res:
+                    lat, lon = float(res[0]["lat"]), float(res[0]["lon"])
+                    break
+            except Exception:
+                return ''
+            time.sleep(1.1)  # política Nominatim: máx 1 req/s
+        if lat is None:
+            geo[key] = {"ts": int(time.time()), "fail": True}
+            return ''  
+        try:
+            q2 = ('[out:json][timeout:15];('
+                  f'nwr["leisure"="park"](around:400,{lat},{lon});'
+                  f'nwr["amenity"~"^(bar|pub|nightclub)$"](around:400,{lat},{lon});'
+                  ');out tags;')
+            req2 = urllib.request.Request(
+                "https://overpass-api.de/api/interpreter",
+                data=urllib.parse.urlencode({"data": q2}).encode(),
+                headers={"User-Agent": GEO_UA})
+            with urllib.request.urlopen(req2, timeout=25) as r:
+                els = json.loads(r.read().decode()).get("elements", [])
+            parks = sum(1 for x in els if x.get("tags", {}).get("leisure") == "park")
+            night = sum(1 for x in els
+                        if x.get("tags", {}).get("amenity") in ("bar", "pub", "nightclub"))
+            e = {"ts": int(time.time()), "parks": parks, "night": night}
+            geo[key] = e
+        except Exception:
+            return ''
+    if e.get("fail"):
+        return ''
+    return f"🌳 {e['parks']} parques · 🍺 {e['night']} bares/fiesta (400m)"
+
+
 def make_sig(price, m2, town, rooms, title):
     # Firma para dedup entre portales. Conservadora: exige precio+m2+ciudad+hab
     # iguales y buen solape de tokens del título.
@@ -384,6 +458,7 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
     tb = telebot.TeleBot(get_bot_token())
     ids = load_ids()
     zonas = load_zonas()
+    geo = load_geo()
     new_urls = []
     sent_drops = 0
     historic_sigs = [v.get("sig") for v in ids.values() if v.get("sig")]
@@ -444,6 +519,8 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
                             f"🔻 <b>BAJADA: {old_price}€ → {price}€</b> [{m2_tg}]\n"
                             f"{html.escape(title)[:90]}\n"
                             f"{zona_tag(zonas, price, m2, town)}\n"
+                    f"{geo_tag(geo, title, town)}\n"
+                            f"{geo_tag(geo, title, town)}\n"
                             f"{html.escape(href)}",
                             parse_mode='HTML')
                         sent_drops += 1
@@ -492,6 +569,7 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
 
     save_ids(ids)
     save_zonas(zonas)
+    save_geo(geo)
 
     # solo a INFO si hay nuevas; si no, a DEBUG
     if new_urls or sent_drops:
