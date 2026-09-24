@@ -437,7 +437,7 @@ def geo_tag(geo, title, town):
             bus = sum(1 for x in els if x.get("tags", {}).get("highway") == "bus_stop"
                       or x.get("tags", {}).get("public_transport") == "platform")
             e = {"ts": int(time.time()), "parks": parks, "night": night,
-                 "coles": coles, "bus": bus}
+                 "coles": coles, "bus": bus, "lat": lat, "lon": lon}
             geo[key] = e
         except Exception:
             return ''
@@ -470,6 +470,88 @@ def seguridad_tag(town):
     return (f"🛡️ {town.strip()}: {e['total']} infracciones ({e['var']}) · "
             f"robos en vivienda {e['dom']} ({e['domvar']}) - Min. Interior 2024")
 
+
+
+# Renta neta media por sección censal, Atlas de Distribución de Renta de los
+# Hogares (INE, año 2023). Datos procesados por pablogguz/ineAtlas.data
+# (CC-BY-4.0) a partir del INE. El lookup coordenada->sección usa el OGC
+# Features API del INE.
+RENTA_PATH = "./data/renta_geo.json"   # caché coords redondeadas -> CUSEC
+try:
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "asturias_renta.json")) as f:
+        RENTA_ASTURIAS = json.load(f)   # {CUSEC: {pc, hh, mun}}
+except (FileNotFoundError, json.JSONDecodeError):
+    RENTA_ASTURIAS = {}
+
+
+def load_renta_geo():
+    try:
+        with open(RENTA_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_renta_geo(rg):
+    if len(rg) > GEO_MAX:
+        rg = dict(sorted(rg.items(), key=lambda kv: kv[1].get("ts", 0),
+                         reverse=True)[:GEO_MAX])
+    with open(RENTA_PATH, "w") as f:
+        json.dump(rg, f)
+
+
+def renta_tag(geo, rgeo, title, town):
+    """Renta media de la sección censal del piso (INE Atlas 2023).
+    Reutiliza las coords que calculó geo_tag; anota, nunca excluye."""
+    if not RENTA_ASTURIAS:
+        return ''
+    key = norm_town(town) + '|' + re.sub(r'\s+', ' ', str(title).lower().strip())[:80]
+    e = geo.get(key)
+    if not e or e.get("fail") or e.get("lat") is None:
+        return ''
+    ckey = f"{e['lat']:.4f},{e['lon']:.4f}"
+    ce = rgeo.get(ckey)
+    if ce is None:
+        import urllib.parse
+        import urllib.request
+        cusec = None
+        try:
+            time.sleep(1.2)  # suavidad con el geoserver del INE
+            filtro = urllib.parse.quote(
+                f"INTERSECTS(the_geom,POINT({e['lon']} {e['lat']}))", safe='(),')
+            url = ("https://www.ine.es/geoserver/ogc/features/v1/collections/"
+                   "WMS_INE_SECCIONES_G01:Secciones_2024/items?f=json&limit=5"
+                   "&filter-lang=cql-text&filter=" + filtro)
+            req = urllib.request.Request(url, headers={"User-Agent": GEO_UA})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                feats = json.loads(r.read().decode()).get("features", [])
+            # preferir la sección con dato de renta; ignorar la agregada *000
+            for ft in feats:
+                c = str(ft.get("properties", {}).get("CUSEC", ""))
+                if c in RENTA_ASTURIAS:
+                    cusec = c
+                    break
+            if cusec is None:
+                for ft in feats:
+                    c = str(ft.get("properties", {}).get("CUSEC", ""))
+                    if c and not c.endswith("000"):
+                        cusec = c
+                        break
+        except Exception:
+            rgeo[ckey] = {"ts": int(time.time()), "fail": True}
+            return ''
+        ce = {"ts": int(time.time()), "cusec": cusec}
+        rgeo[ckey] = ce
+        save_renta_geo(rgeo)
+    if ce.get("fail") or not ce.get("cusec"):
+        return ''
+    r = RENTA_ASTURIAS.get(ce["cusec"])
+    if not r:
+        return ''
+    pc = f"{r['pc']:,}".replace(',', '.')
+    hh = f"{r['hh']:,}".replace(',', '.')
+    return f"💶 renta media zona: {pc}€/pers · {hh}€/hogar (INE 2023)"
 
 
 PISOS_PATH = "./data/pisos.json"
@@ -556,6 +638,7 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
     ids = load_ids()
     zonas = load_zonas()
     geo = load_geo()
+    rgeo = load_renta_geo()
     pisos = load_pisos()
     sent_chollos = 0
     new_urls = []
@@ -620,10 +703,9 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
                             f"🔻 <b>BAJADA: {old_price}€ → {price}€</b> [{m2_tg}]\n"
                             f"{html.escape(title)[:90]}\n"
                             f"{zona_tag(zonas, price, m2, town)}\n"
-                    f"{geo_tag(geo, title, town)}\n"
-                    f"{seguridad_tag(town)}\n"
                             f"{geo_tag(geo, title, town)}\n"
                             f"{seguridad_tag(town)}\n"
+                            f"{renta_tag(geo, rgeo, title, town)}\n"
                             f"{html.escape(href)}",
                             parse_mode='HTML')
                         sent_drops += 1
@@ -679,6 +761,9 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
                     f"{html.escape(title)[:90]}\n"
                     f"{html.escape(zone)}\n"
                     f"{zona_tag(zonas, price, m2, town)}\n"
+                    f"{geo_tag(geo, title, town)}\n"
+                    f"{seguridad_tag(town)}\n"
+                    f"{renta_tag(geo, rgeo, title, town)}\n"
                     f"{html.escape(href)}",
                     parse_mode='HTML')
             except telebot.apihelper.ApiTelegramException as e:
@@ -704,6 +789,7 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
     save_ids(ids)
     save_zonas(zonas)
     save_geo(geo)
+    save_renta_geo(rgeo)
     save_pisos(pisos)
 
     # solo a INFO si hay nuevas; si no, a DEBUG
