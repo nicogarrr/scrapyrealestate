@@ -69,6 +69,7 @@ def sembrar_config(cfg):
     cfg.setdefault("llm_key", "")               # opcional: OpenAI-compatible
     cfg.setdefault("llm_base_url", "")
     cfg.setdefault("llm_model", "")
+    cfg.setdefault("tunel_email", "")             # email push del tunel (formsubmit)
 
 
 def guardar_config(cfg):
@@ -589,6 +590,30 @@ def texto_usuarios():
     return "\n".join(lineas)
 
 
+def notificar_email(msg, cfg):
+    """Aviso push por email (formsubmit) para bajar la latencia del tunel.
+    Fire-and-forget: si falla, la recogida periodica sigue como respaldo."""
+    destino = cfg.get("tunel_email")
+    if not destino:
+        return
+    import urllib.request
+    datos = json.dumps({
+        "_subject": f"BOT-PISOS mensaje de "
+                    f"{getattr(msg.from_user, 'first_name', '') or '?'}",
+        "de_id": msg.from_user.id,
+        "de_nombre": getattr(msg.from_user, "first_name", "") or "",
+        "de_username": getattr(msg.from_user, "username", "") or "",
+        "texto": msg.text,
+    }).encode()
+    req = urllib.request.Request(
+        f"https://formsubmit.co/ajax/{destino}",
+        data=datos, headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=6).read()
+    except Exception:
+        pass
+
+
 def anotar_peticion(msg):
     """Texto no-comando de alguien con acceso = peticion de funcion nueva.
     Se guarda para que el equipo la recoja y la convierta en PR."""
@@ -632,7 +657,7 @@ def bucle_telegram(token, cfg):
     offset = _load_json(OFFSET_PATH, {}).get("offset", 0)
     while True:
         try:
-            updates = tb.get_updates(offset=offset, timeout=25,
+            updates = tb.get_updates(offset=offset, timeout=10,
                                      allowed_updates=["message", "channel_post"])
             for upd in updates:
                 offset = upd.update_id + 1
@@ -651,6 +676,7 @@ def bucle_telegram(token, cfg):
                 if accion == "desconocido" and nivel in ("owner", "user",
                                                          "admin"):
                     anotar_peticion(msg)
+                    notificar_email(msg, cfg)
                     tb.send_message(msg.chat.id,
                                     "Se lo paso 🤝. Te contesto por aquí en "
                                     "unos minutos.")
