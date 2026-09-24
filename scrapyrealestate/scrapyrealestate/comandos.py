@@ -13,7 +13,8 @@ CONFIG_PATH = "./data/config.json"
 OWNER_PATH = "./data/telegram_owner.json"     # {user_id, nombre}
 OFFSET_PATH = "./data/telegram_offset.json"   # offset de get_updates
 USERS_PATH = "./data/telegram_users.json"     # {autorizados, pendientes, avisados}
-PETICIONES_PATH = "./data/peticiones.json"    # peticiones de funciones a relatar
+PETICIONES_PATH = "./data/peticiones.json"    # mensajes/peticiones a relatar
+RESPUESTAS_PATH = "./data/respuestas.json"    # respuestas del equipo a usuarios
 FORCE_PATH = "./data/.force_cycle"            # flag para ciclo inmediato
 
 # nombre corto -> dominio del portal
@@ -256,7 +257,9 @@ AYUDA = ("Puedes hablarme normal. Entiendo cosas como:\n"
          "• «usuarios» / «pendientes» - quién tiene acceso\n"
          "• Solo el dueño: «autoriza 123456789», «quita a @usuario»,\n"
          "  «rechaza @usuario» - gestiona quién puede hablarme\n"
-         "Todo lo que cambie te lo confirmo aquí mismo.")
+         "Todo lo que cambie te lo confirmo aquí mismo.\n"
+         "Y si me escribes cualquier otra cosa, se lo paso al equipo\n"
+         "y te contestan por aquí en unos minutos 🤝.")
 
 
 def ejecutar(tb, chat_id, accion, params, cfg, nivel="owner"):
@@ -602,6 +605,26 @@ def anotar_peticion(msg):
         json.dump(peticiones, f, ensure_ascii=False, indent=2)
 
 
+def enviar_respuestas(tb):
+    """Saca las respuestas del equipo (respuestas.json) a sus destinatarios.
+    Solo limpia el archivo si todas salen; si no, reintenta en la próxima
+    vuelta."""
+    resp = _load_json(RESPUESTAS_PATH, [])
+    if not resp:
+        return 0
+    enviadas = 0
+    for r in resp:
+        try:
+            tb.send_message(r["para_id"], r["texto"])
+            enviadas += 1
+        except Exception:
+            pass
+    if enviadas == len(resp):
+        with open(RESPUESTAS_PATH, "w") as f:
+            json.dump([], f)
+    return enviadas
+
+
 def bucle_telegram(token, cfg):
     """Hilo de escucha: get_updates en largo; procesa comandos del dueño."""
     import telebot
@@ -629,13 +652,17 @@ def bucle_telegram(token, cfg):
                                                          "admin"):
                     anotar_peticion(msg)
                     tb.send_message(msg.chat.id,
-                                    "Se lo paso 🤝. Si era una orden, escribe "
-                                    "«ayuda» para ver las que entiendo.")
+                                    "Se lo paso 🤝. Te contesto por aquí en "
+                                    "unos minutos.")
                     continue
                 ejecutar(tb, msg.chat.id, accion, params, cfg, nivel)
             if updates:
                 with open(OFFSET_PATH, "w") as f:
                     json.dump({"offset": offset}, f)
+            try:
+                enviar_respuestas(tb)
+            except Exception:
+                pass
         except Exception:
             time.sleep(10)
         time.sleep(1)
