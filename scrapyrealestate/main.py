@@ -626,6 +626,43 @@ def zona_de(flat):
     return m.group(1).strip()[:60] if m else ''
 
 
+ALERTAS_PRIV_PATH = "./data/alertas_privadas.json"  # avisos 1:a-1 por usuario
+
+
+def cargar_alertas_privadas():
+    """Preferencias de avisos privados: [{user_id, town, excluir_zonas,
+    incluir_zonas}]. Se relee en cada envio (cambios sin reiniciar)."""
+    try:
+        with open(ALERTAS_PRIV_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+
+
+def coincide_alerta(priv, town, zona):
+    """True si el piso (town, zona) casa con el filtro del usuario."""
+    if priv.get("town") and comandos.norm(priv["town"]) != comandos.norm(town):
+        return False
+    z = comandos.norm(zona or "")
+    if any(comandos.norm(x) in z for x in priv.get("excluir_zonas", [])):
+        return False
+    inc = priv.get("incluir_zonas", [])
+    if inc and not any(comandos.norm(x) in z for x in inc):
+        return False
+    return True
+
+
+def avisos_privados(tb, cuerpo, town, zona):
+    """Manda el aviso por privado a cada usuario cuyo filtro case."""
+    for priv in cargar_alertas_privadas():
+        if not coincide_alerta(priv, town, zona):
+            continue
+        try:
+            tb.send_message(priv["user_id"], cuerpo, parse_mode='HTML')
+        except telebot.apihelper.ApiTelegramException as e:
+            logger.error(f'ERROR AVISO PRIVADO {priv.get("user_id")}: {e}')
+
+
 def update_pisos(pisos, flat, price, m2, town):
     href = str(flat.get('href', '') or '')
     if not href:
@@ -733,17 +770,20 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
             if isinstance(old_price, int) and isinstance(price, int) and price != old_price:
                 entry["price"] = price
                 if price < old_price and within_range and telegram_msg:
+                    cuerpo_bajada = (
+                        f"🔻 <b>BAJADA: {old_price}€ → {price}€</b> [{m2_tg}]\n"
+                        f"{html.escape(title)[:90]}\n"
+                        f"{zona_tag(zonas, price, m2, town)}\n"
+                        f"{geo_tag(geo, title, town)}\n"
+                        f"{seguridad_tag(town)}\n"
+                        f"{renta_tag(geo, rgeo, title, town)}\n"
+                        f"{html.escape(href)}")
                     try:
-                        tb.send_message(
-                            tg_chatID,
-                            f"🔻 <b>BAJADA: {old_price}€ → {price}€</b> [{m2_tg}]\n"
-                            f"{html.escape(title)[:90]}\n"
-                            f"{zona_tag(zonas, price, m2, town)}\n"
-                            f"{geo_tag(geo, title, town)}\n"
-                            f"{seguridad_tag(town)}\n"
-                            f"{renta_tag(geo, rgeo, title, town)}\n"
-                            f"{html.escape(href)}",
-                            parse_mode='HTML')
+                        tb.send_message(tg_chatID, cuerpo_bajada,
+                                        parse_mode='HTML')
+                        avisos_privados(tb, cuerpo_bajada, town,
+                                        (inv or {}).get("zona")
+                                        if inv else zona_de(flat))
                         sent_drops += 1
                         if inv is not None:
                             ch, diffc = es_chollo(zonas, price, m2, town)
@@ -790,20 +830,20 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
             except (ValueError, ZeroDivisionError, TypeError):
                 avg_price_m2 = ''
             zone = ' · '.join(x for x in (town.strip(), rooms.strip()) if x)
+            cuerpo = (f"<b>{price_str}</b> [{m2_tg}] → {avg_price_m2}€/m²\n"
+                      f"{html.escape(title)[:90]}\n"
+                      f"{html.escape(zone)}\n"
+                      f"{zona_tag(zonas, price, m2, town)}\n"
+                      f"{geo_tag(geo, title, town)}\n"
+                      f"{seguridad_tag(town)}\n"
+                      f"{renta_tag(geo, rgeo, title, town)}\n"
+                      f"{html.escape(href)}")
             try:
-                tb.send_message(
-                    tg_chatID,
-                    f"<b>{price_str}</b> [{m2_tg}] → {avg_price_m2}€/m²\n"
-                    f"{html.escape(title)[:90]}\n"
-                    f"{html.escape(zone)}\n"
-                    f"{zona_tag(zonas, price, m2, town)}\n"
-                    f"{geo_tag(geo, title, town)}\n"
-                    f"{seguridad_tag(town)}\n"
-                    f"{renta_tag(geo, rgeo, title, town)}\n"
-                    f"{html.escape(href)}",
-                    parse_mode='HTML')
+                tb.send_message(tg_chatID, cuerpo, parse_mode='HTML')
             except telebot.apihelper.ApiTelegramException as e:
                 logger.error(f'ERROR ENVIANDO A TELEGRAM: {e}')
+            avisos_privados(tb, cuerpo, town,
+                            inv.get("zona") if inv else zona_de(flat))
             time.sleep(3.05)
             if inv is not None:
                 ch, diffc = es_chollo(zonas, price, m2, town)

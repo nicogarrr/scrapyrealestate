@@ -110,3 +110,13 @@ def test_update_pisos_guarda_url_y_zona():
              "rooms": "", "site": "fotocasa"}
     e2 = main.update_pisos(pisos, flat2, 90000, 80, "Mieres")
     assert e2["zona"] == "La Villa"  # neighbour del portal manda
+
+
+def test_coincide_alerta():
+    priv = {"user_id": 1, "town": "Mieres", "excluir_zonas": ["uxo"]}
+    assert main.coincide_alerta(priv, "Mieres", "Santa Marina-Uxo") is False
+    assert main.coincide_alerta(priv, "Mieres", "La Villa") is True
+    assert main.coincide_alerta(priv, "Gijón", "Centro") is False
+    priv_inc = {"user_id": 1, "town": "Mieres", "incluir_zonas": ["villa", "centro"]}
+    assert main.coincide_alerta(priv_inc, "Mieres", "La Villa") is True
+    assert main.coincide_alerta(priv_inc, "Mieres", "Santa Marina-Uxo") is False
