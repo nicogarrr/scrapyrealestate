@@ -48,6 +48,7 @@ def test_get_urls_preserves_existing_query_strings(monkeypatch):
     assert urls["start_urls_pisoscom"][0].endswith("/hasta-100000/fecharecientedesde-desc/")
     assert urls["start_urls_habitaclia"][0].endswith("?ordenar=mas_recientes")
     assert urls["start_urls_yaencontre"][0].endswith("/f-ascensor/o-recientes")
+    assert main.page2_url("yaencontre.com", "https://www.yaencontre.com/venta/pisos/gijon/f-ascensor") == "https://www.yaencontre.com/venta/pisos/gijon/f-ascensor/o-recientes/pag-2"
 
 
 def test_check_new_flats_supports_string_ids_and_numeric_prices(tmp_path, monkeypatch):

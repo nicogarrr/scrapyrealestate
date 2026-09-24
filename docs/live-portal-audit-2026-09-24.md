@@ -52,10 +52,15 @@ La portada respondió `200`, pero el documento fue una pantalla de consentimient
 
 No se recommendan proxies gratuitos, rotación de User-Agent para evadir bloqueos ni extracción de tokens, cookies o datos internos de terceros. La integración debe usar rutas públicas permitidas, APIs autorizadas o una fuente de datos contratada, respetando los términos de cada portal.
 
-## Prioridad de implementación
+## Actualización posterior: Yaencontre sí tiene ruta pública válida
 
-1. Corregir el parser de Idealista y añadir su contrato real.
-2. Resolver una URL válida de Habitaclia y capturar un fixture.
-3. Resolver una URL válida de Yaencontre; si continúa 404, retirar su URL de la configuración de producción.
-4. Mantener Pisos.com y Fotocasa como fuentes con contratos ya verificados.
-5. Después integrar SQLite/historial, dashboard y score explicable de zonas; no mezclarlo con scraping.
+La primera auditoría comprobó `https://www.yaencontre.com/venta/pisos/asturias`, pero una segunda prueba con Chromium encontró la ruta correcta:
+
+- Base: `https://www.yaencontre.com/venta/pisos/gijon` → `200`, 42 tarjetas.
+- Ascensor: `https://www.yaencontre.com/venta/pisos/gijon/f-ascensor` → `200`, título con `864` resultados y 42 tarjetas.
+- Paginación: `pag-2`, `pag-3`, etc. No usar `/pagina-2`.
+- La tarjeta actual es `article.real-estate-map-list-card`.
+- El enlace de detalle sigue `/venta/piso/inmueble-<id>-<listingId>`; el segundo número es el ID del anuncio.
+- Precio, m², habitaciones y baños están en `.price-wrapper` y `.media-info`.
+
+Se actualizó el spider y se añadieron dos pruebas con la captura real. La ruta de configuración de Asturias debe cambiarse a una URL municipal válida cuando se configure el mercado concreto; no convertir la ruta `asturias` en un hecho válido por analogía.

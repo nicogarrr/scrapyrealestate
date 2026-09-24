@@ -461,7 +461,7 @@ def page2_url(portal_name_url, url):
             return base + '/2?' + q
         return url + '/2'
     if portal_name_url == 'yaencontre.com':
-        return url + '/o-recientes/pagina-2'
+        return append_url_fragment(url, '/o-recientes/pag-2')
     if portal_name_url == 'habitaclia.com':
         return url + '?ordenar=mas_recientes&pagina=2'
     return None
@@ -513,7 +513,7 @@ def scrap_realestate(telegram_msg):
         elif portal_name_url == 'habitaclia.com':
             spider, page1 = 'habitaclia', url + '?ordenar=mas_recientes'
         elif portal_name_url == 'yaencontre.com':
-            spider, page1 = 'yaencontre', url + '/o-recientes'
+            spider, page1 = 'yaencontre', append_url_fragment(url, '/o-recientes')
         else:
             continue
 
