@@ -382,6 +382,8 @@ def geo_tag(geo, title, town):
     import urllib.request
     key = norm_town(town) + '|' + re.sub(r'\s+', ' ', str(title).lower().strip())[:80]
     e = geo.get(key)
+    if e is not None and not e.get("fail") and "bus" not in e:
+        e = None  # caché antigua sin bus/coles: recalcular
     if e is None:
         # limpia el título ("Piso en Calle X, Centro" -> "Calle X, Centro")
         clean = re.sub(r'^(piso|casa|ático|atico|dúplex|duplex|estudio|apartamento|chalet|adosado|vivienda|local|oficina|planta baja|bajo)\s+(en\s+)?',
@@ -408,23 +410,41 @@ def geo_tag(geo, title, town):
             q2 = ('[out:json][timeout:15];('
                   f'nwr["leisure"="park"](around:400,{lat},{lon});'
                   f'nwr["amenity"~"^(bar|pub|nightclub)$"](around:400,{lat},{lon});'
+                  f'nwr["amenity"="school"](around:400,{lat},{lon});'
+                  f'nwr["highway"="bus_stop"](around:400,{lat},{lon});'
+                  f'nwr["public_transport"="platform"](around:400,{lat},{lon});'
                   ');out tags;')
-            req2 = urllib.request.Request(
-                "https://overpass-api.de/api/interpreter",
-                data=urllib.parse.urlencode({"data": q2}).encode(),
-                headers={"User-Agent": GEO_UA})
-            with urllib.request.urlopen(req2, timeout=25) as r:
-                els = json.loads(r.read().decode()).get("elements", [])
+            els = None
+            for endpoint in ("https://overpass-api.de/api/interpreter",
+                             "https://overpass.kumi.systems/api/interpreter"):
+                try:
+                    req2 = urllib.request.Request(
+                        endpoint,
+                        data=urllib.parse.urlencode({"data": q2}).encode(),
+                        headers={"User-Agent": GEO_UA})
+                    with urllib.request.urlopen(req2, timeout=25) as r:
+                        els = json.loads(r.read().decode()).get("elements", [])
+                    break
+                except Exception:
+                    continue
+            if els is None:
+                return ''
+            
             parks = sum(1 for x in els if x.get("tags", {}).get("leisure") == "park")
             night = sum(1 for x in els
                         if x.get("tags", {}).get("amenity") in ("bar", "pub", "nightclub"))
-            e = {"ts": int(time.time()), "parks": parks, "night": night}
+            coles = sum(1 for x in els if x.get("tags", {}).get("amenity") == "school")
+            bus = sum(1 for x in els if x.get("tags", {}).get("highway") == "bus_stop"
+                      or x.get("tags", {}).get("public_transport") == "platform")
+            e = {"ts": int(time.time()), "parks": parks, "night": night,
+                 "coles": coles, "bus": bus}
             geo[key] = e
         except Exception:
             return ''
     if e.get("fail"):
         return ''
-    return f"🌳 {e['parks']} parques · 🍺 {e['night']} bares/fiesta (400m)"
+    return (f"🌳 {e['parks']} parques · 🍺 {e['night']} bares/fiesta · "
+            f"🚌 {e['bus']} bus · 🏫 {e['coles']} coles (400m)")
 
 
 
@@ -449,6 +469,59 @@ def seguridad_tag(town):
         return ''
     return (f"🛡️ {town.strip()}: {e['total']} infracciones ({e['var']}) · "
             f"robos en vivienda {e['dom']} ({e['domvar']}) - Min. Interior 2024")
+
+
+
+PISOS_PATH = "./data/pisos.json"
+PISOS_MAX = 2000        # inventario durable de pisos vistos
+CHOLLO_UMBRAL = 25.0    # % bajo la mediana de la ciudad para marcar CHOLLO
+
+
+def load_pisos():
+    try:
+        with open(PISOS_PATH) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_pisos(ps):
+    if len(ps) > PISOS_MAX:
+        ps = dict(sorted(ps.items(), key=lambda kv: kv[1].get("ts", 0),
+                         reverse=True)[:PISOS_MAX])
+    with open(PISOS_PATH, "w") as f:
+        json.dump(ps, f)
+
+
+def es_chollo(zonas, price, m2, town):
+    """True si el piso está >=CHOLLO_UMBRAL% bajo la mediana €/m² de su ciudad."""
+    if not (isinstance(price, int) and isinstance(m2, int) and m2 >= 30
+            and 5000 <= price):
+        return False, None
+    t = norm_town(town)
+    e = zonas.get(t)
+    if not e or len(e["samples"]) < ZONAS_MIN_MUESTRAS:
+        return False, None
+    samples = sorted(e["samples"])
+    med = samples[len(samples) // 2]
+    if med <= 0:
+        return False, None
+    diff = (med - price / m2) / med * 100
+    return diff >= CHOLLO_UMBRAL, round(diff)
+
+
+def update_pisos(pisos, flat, price, m2, town):
+    href = str(flat.get('href', '') or '')
+    if not href:
+        return None
+    e = pisos.get(href, {})
+    e.update({"title": str(flat.get('title', '') or '')[:120],
+              "price": price if isinstance(price, int) else e.get("price"),
+              "m2": m2 or e.get("m2"),
+              "town": town, "rooms": str(flat.get('rooms', '') or ''),
+              "portal": flat.get('site', ''), "ts": int(time.time())})
+    pisos[href] = e
+    return e
 
 
 def make_sig(price, m2, town, rooms, title):
@@ -483,6 +556,8 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
     ids = load_ids()
     zonas = load_zonas()
     geo = load_geo()
+    pisos = load_pisos()
+    sent_chollos = 0
     new_urls = []
     sent_drops = 0
     historic_sigs = [v.get("sig") for v in ids.values() if v.get("sig")]
@@ -516,6 +591,7 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
         m2 = numeric_price(flat.get('m2', ''))
         m2_tg = f'{m2}m²' if m2 else ''
         update_zonas(zonas, price, m2, town)
+        inv = update_pisos(pisos, flat, price, m2, town)
 
         if price is None:
             continue
@@ -551,6 +627,21 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
                             f"{html.escape(href)}",
                             parse_mode='HTML')
                         sent_drops += 1
+                        if inv is not None:
+                            ch, diffc = es_chollo(zonas, price, m2, town)
+                            if ch and not inv.get("chollo"):
+                                inv["chollo"] = True
+                                try:
+                                    tb.send_message(
+                                        tg_chatID,
+                                        f"🏆 <b>CHOLLO POR BAJADA: {diffc}% bajo la media de {town.strip()}</b>\n"
+                                        f"{html.escape(title)[:90]}\n"
+                                        f"{html.escape(href)}",
+                                        parse_mode='HTML',
+                                        disable_web_page_preview=True)
+                                    sent_chollos += 1
+                                except telebot.apihelper.ApiTelegramException:
+                                    pass
                     except telebot.apihelper.ApiTelegramException as e:
                         logger.error(f'ERROR ENVIANDO A TELEGRAM: {e}')
                     time.sleep(3.05)
@@ -593,10 +684,27 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
             except telebot.apihelper.ApiTelegramException as e:
                 logger.error(f'ERROR ENVIANDO A TELEGRAM: {e}')
             time.sleep(3.05)
+            if inv is not None:
+                ch, diffc = es_chollo(zonas, price, m2, town)
+                if ch and not inv.get("chollo"):
+                    inv["chollo"] = True
+                    try:
+                        tb.send_message(
+                            tg_chatID,
+                            f"🏆 <b>CHOLLO: {diffc}% bajo la media de {town.strip()}</b>\n"
+                            f"{html.escape(title)[:90]}\n"
+                            f"{html.escape(href)}",
+                            parse_mode='HTML',
+                            disable_web_page_preview=True)
+                        sent_chollos += 1
+                    except telebot.apihelper.ApiTelegramException:
+                        pass
+                    time.sleep(3.05)
 
     save_ids(ids)
     save_zonas(zonas)
     save_geo(geo)
+    save_pisos(pisos)
 
     # solo a INFO si hay nuevas; si no, a DEBUG
     if new_urls or sent_drops:
@@ -605,6 +713,7 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
     else:
         logger.debug(f"NUEVAS: 0 | TOTAL: {len(data_json)}")
 
+    logger.info(f"CHOLLOS ENVIADOS: {sent_chollos}") if sent_chollos else None
     return len(new_urls), sent_drops
 
 
