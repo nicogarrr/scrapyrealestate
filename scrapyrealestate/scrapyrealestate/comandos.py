@@ -607,7 +607,13 @@ def notificar_email(msg, cfg):
     }).encode()
     req = urllib.request.Request(
         f"https://formsubmit.co/ajax/{destino}",
-        data=datos, headers={"Content-Type": "application/json"})
+        data=datos,
+        headers={"Content-Type": "application/json",
+                 "Accept": "application/json",
+                 "X-Requested-With": "XMLHttpRequest",
+                 "Origin": "https://nicogarrr.github.io",
+                 "Referer": "https://nicogarrr.github.io/",
+                 "User-Agent": "Mozilla/5.0"})
     try:
         urllib.request.urlopen(req, timeout=6).read()
     except Exception:
