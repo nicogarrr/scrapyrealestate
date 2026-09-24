@@ -12,6 +12,7 @@ import unicodedata
 CONFIG_PATH = "./data/config.json"
 OWNER_PATH = "./data/telegram_owner.json"     # {user_id, nombre}
 OFFSET_PATH = "./data/telegram_offset.json"   # offset de get_updates
+USERS_PATH = "./data/telegram_users.json"     # {autorizados, pendientes, avisados}
 FORCE_PATH = "./data/.force_cycle"            # flag para ciclo inmediato
 
 # nombre corto -> dominio del portal
@@ -106,6 +107,17 @@ def parse_comando(texto):
     if re.search(r"\b(ciclo|busca ahora|buscar ahora|actualiza|refresca)\b", t):
         return "ciclo", {}
 
+    m = re.search(r"\b(autoriza|autorizar|aprueba|aprobar|admite)\b\s+(?:a\s+)?(@?[\w]+)", t)
+    if m:
+        return "usuario_add", {"ref": m.group(2)}
+    m = re.search(r"\b(rechaza|rechazar|deniega|denegar|bloquea)\b\s+(?:a\s+)?(@?[\w]+)", t)
+    if m:
+        return "usuario_rechaza", {"ref": m.group(2)}
+    if re.search(r"\b(pendientes|solicitudes)\b", t):
+        return "pendientes", {}
+    if re.search(r"\b(usuarios|autorizados)\b", t):
+        return "usuarios", {}
+
     m = re.search(r"\b(silencia|silenciar)\b\s*(\w+)?", t)
     if m:
         p = portal_en(t)
@@ -142,9 +154,11 @@ def parse_comando(texto):
         if p:
             return "activar", {"portal": m.group(2).strip()}
         return "municipio_add", {"nombre": m.group(2).strip()}
-    m = re.search(r"\b(quita|quitar|elimina|saca|borra)\b\s+(?:de\s+|a\s+)?([a-zñ][a-zñ \-]*?)\s*$", t)
+    m = re.search(r"\b(quita|quitar|elimina|saca|borra)\b\s+(?:de\s+|a\s+)?(@?\w[\w \-]*?)\s*$", t)
     if m:
         nombre = m.group(2).strip()
+        if nombre.startswith("@") or nombre.isdigit():
+            return "usuario_del", {"ref": nombre}
         if nombre in PORTALES:
             return "apagar", {"portal": nombre}
         return "municipio_del", {"nombre": nombre}
@@ -218,6 +232,9 @@ def texto_estado(cfg):
             lineas.append(f"⚠️ {portal}: 0 items (bloqueado o sin resultados)")
         else:
             lineas.append(f"✅ {portal}: {n} items/ciclo")
+    u = cargar_usuarios()
+    lineas.append(f"👥 {len(u['autorizados'])} autorizados · "
+                  f"{len(u['pendientes'])} pendientes")
     lineas.append(f"Último ciclo: {st.get('last_cycle', '?')}"
                   f" · nuevos enviados: {st.get('sent_new', 0)}")
     return "\n".join(lineas)
@@ -231,11 +248,18 @@ AYUDA = ("Puedes hablarme normal. Entiendo cosas como:\n"
          "• «busca ahora» — fuerza un ciclo al momento\n"
          "• «estado» — cómo va todo\n"
          "• «chollos» — los mejores pisos vistos\n"
+         "• «usuarios» / «pendientes» - quién tiene acceso\n"
+         "• Solo el dueño: «autoriza 123456789», «quita a @usuario»,\n"
+         "  «rechaza @usuario» - gestiona quién puede hablarme\n"
          "Todo lo que cambie te lo confirmo aquí mismo.")
 
 
-def ejecutar(tb, chat_id, accion, params, cfg):
+def ejecutar(tb, chat_id, accion, params, cfg, nivel="owner"):
     """Aplica la accion sobre cfg (persistiendo) y responde en chat_id."""
+    if accion in ("usuario_add", "usuario_del", "usuario_rechaza") \
+            and nivel not in ("owner", "canal"):
+        tb.send_message(chat_id, "Eso solo puede hacerlo el dueño 👑.")
+        return
     if accion == "ayuda":
         tb.send_message(chat_id, AYUDA, disable_web_page_preview=True)
     elif accion == "estado":
@@ -307,6 +331,16 @@ def ejecutar(tb, chat_id, accion, params, cfg):
             guardar_config(cfg)
         tb.send_message(chat_id, f"🤫 {p} silenciado: sigo intentándolo pero "
                         "sin avisos de salud en el canal.")
+    elif accion == "usuario_add":
+        usuarios_add(tb, chat_id, params["ref"])
+    elif accion == "usuario_del":
+        usuarios_quita(tb, chat_id, params["ref"])
+    elif accion == "usuario_rechaza":
+        usuarios_rechaza(tb, chat_id, params["ref"])
+    elif accion == "pendientes":
+        tb.send_message(chat_id, texto_pendientes())
+    elif accion == "usuarios":
+        tb.send_message(chat_id, texto_usuarios())
     else:
         tb.send_message(chat_id, "No te he entendido 🤔. Escribe «ayuda» y te "
                         "digo lo que sé hacer.")
@@ -320,24 +354,194 @@ def _load_json(path, default):
         return default
 
 
-def es_duenio(msg, cfg):
-    """Control de acceso: solo el dueño (su user_id de Telegram).
-    Primer mensaje privado/grupo lo registra como dueño. Los mensajes del
-    canal (channel_post) los acepta solo si vienen del canal configurado."""
+def cargar_usuarios():
+    u = _load_json(USERS_PATH, {})
+    u.setdefault("autorizados", [])
+    u.setdefault("pendientes", [])
+    u.setdefault("avisados", [])   # user_ids ya notificados al dueño
+    return u
+
+
+def guardar_usuarios(u):
+    with open(USERS_PATH, "w") as f:
+        json.dump(u, f, ensure_ascii=False, indent=2)
+
+
+def resolver_ref(ref, lista):
+    """ref puede ser id numerico, @username o nombre; busca en la lista."""
+    r = str(ref).lstrip("@").strip().lower()
+    for u in lista:
+        if r and r == str(u.get("user_id", "")):
+            return u
+        if r and r == str(u.get("username", "")).lower():
+            return u
+        if r and norm(u.get("nombre", "")) == norm(r):
+            return u
+    return None
+
+
+def nivel_acceso(msg, cfg):
+    """Devuelve (nivel, user_id): 'canal' (post del canal configurado),
+    'owner', 'user' (autorizado), 'sin_owner' (aun no hay dueño) o
+    None (desconocido: pendiente de aprobacion)."""
     chat = msg.chat
     if getattr(msg, "sender_chat", None) is not None and msg.from_user is None:
-        # post de canal: solo el canal configurado; quien postea ahí es admin
-        return str(chat.id) == str(cfg.get("telegram_chatuserID"))
+        # post de canal: solo el canal configurado; quien postea ahi es admin
+        if str(chat.id) == str(cfg.get("telegram_chatuserID")):
+            return "canal", None
+        return None, None
     uid = getattr(msg.from_user, "id", None)
     if uid is None:
-        return False
+        return None, None
     owner = _load_json(OWNER_PATH, {})
     if not owner.get("user_id"):
-        nombre = getattr(msg.from_user, "first_name", "") or ""
-        with open(OWNER_PATH, "w") as f:
-            json.dump({"user_id": uid, "nombre": nombre}, f)
-        return True
-    return uid == owner.get("user_id")
+        return "sin_owner", uid
+    if uid == owner.get("user_id"):
+        return "owner", uid
+    if resolver_ref(uid, cargar_usuarios()["autorizados"]):
+        return "user", uid
+    return None, uid
+
+
+def registrar_dueno(tb, msg, cfg):
+    """El primer remitente privado/grupo queda registrado como dueño."""
+    uid = msg.from_user.id
+    nombre = getattr(msg.from_user, "first_name", "") or ""
+    with open(OWNER_PATH, "w") as f:
+        json.dump({"user_id": uid, "nombre": nombre}, f)
+    aviso = (f"👑 Dueño registrado: {nombre} (id {uid}). "
+             "Solo respondo a ti y a quien autorices.")
+    tb.send_message(msg.chat.id, aviso)
+    canal = cfg.get("telegram_chatuserID")
+    if canal and str(msg.chat.id) != str(canal):
+        try:
+            tb.send_message(canal, aviso)
+        except Exception:
+            pass
+
+
+def gestionar_desconocido(tb, msg):
+    """Alguien sin acceso escribe al bot: queda pendiente y se avisa al dueño."""
+    uid = msg.from_user.id
+    nombre = getattr(msg.from_user, "first_name", "") or ""
+    username = getattr(msg.from_user, "username", "") or ""
+    u = cargar_usuarios()
+    if not resolver_ref(uid, u["pendientes"]):
+        u["pendientes"].append({"user_id": uid, "nombre": nombre,
+                                "username": username})
+        guardar_usuarios(u)
+    owner = _load_json(OWNER_PATH, {})
+    if owner.get("user_id") and uid not in u["avisados"]:
+        try:
+            tb.send_message(owner["user_id"],
+                            f"👤 {nombre} (@{username or '-'}, id {uid}) "
+                            "quiere usar el bot. Responde "
+                            f"«autoriza {uid}» o «rechaza {uid}».")
+            u["avisados"].append(uid)
+            guardar_usuarios(u)
+        except Exception:
+            pass
+    tb.send_message(msg.chat.id,
+                    "Hola 👋. Este bot es privado: he dejado tu solicitud "
+                    "al dueño y te aviso aquí mismo si te autoriza.")
+
+
+def usuarios_add(tb, chat_id, ref):
+    u = cargar_usuarios()
+    encontrado = resolver_ref(ref, u["pendientes"])
+    if encontrado:
+        u["pendientes"] = [x for x in u["pendientes"] if x is not encontrado]
+        if not resolver_ref(encontrado["user_id"], u["autorizados"]):
+            u["autorizados"].append(encontrado)
+        guardar_usuarios(u)
+        tb.send_message(chat_id, f"✅ {encontrado.get('nombre') or ref} "
+                        "autorizado. Ya puede hablarme.")
+        try:
+            tb.send_message(encontrado["user_id"],
+                            "✅ Acceso concedido: ya puedes hablarme. "
+                            "Escribe «ayuda» para ver lo que sé hacer.")
+        except Exception:
+            pass
+        return
+    r = str(ref).lstrip("@").strip()
+    if r.isdigit():
+        if resolver_ref(r, u["autorizados"]):
+            tb.send_message(chat_id, "Ese id ya estaba autorizado.")
+            return
+        u["autorizados"].append({"user_id": int(r), "nombre": "",
+                                 "username": ""})
+        guardar_usuarios(u)
+        tb.send_message(chat_id, f"✅ Autorizado el id {r}.")
+        try:
+            tb.send_message(int(r), "✅ Acceso concedido: ya puedes hablarme. "
+                            "Escribe «ayuda» para ver lo que sé hacer.")
+        except Exception:
+            pass
+        return
+    tb.send_message(chat_id, f"No tengo ninguna solicitud de {ref}. Telegram "
+                    "no me deja resolver usuarios que no me han escrito: "
+                    "pídele que me hable primero por privado y repite "
+                    f"«autoriza {ref}», o dame su id numérico "
+                    "(«autoriza 123456789»).")
+
+
+def usuarios_quita(tb, chat_id, ref):
+    u = cargar_usuarios()
+    encontrado = resolver_ref(ref, u["autorizados"])
+    if not encontrado:
+        tb.send_message(chat_id, f"{ref} no estaba autorizado.")
+        return
+    u["autorizados"] = [x for x in u["autorizados"] if x is not encontrado]
+    guardar_usuarios(u)
+    tb.send_message(chat_id, f"🚫 Acceso quitado a "
+                    f"{encontrado.get('nombre') or ref}.")
+    try:
+        tb.send_message(encontrado["user_id"],
+                        "Te han quitado el acceso a este bot.")
+    except Exception:
+        pass
+
+
+def usuarios_rechaza(tb, chat_id, ref):
+    u = cargar_usuarios()
+    encontrado = resolver_ref(ref, u["pendientes"])
+    if not encontrado:
+        tb.send_message(chat_id, f"No hay ninguna solicitud pendiente de {ref}.")
+        return
+    u["pendientes"] = [x for x in u["pendientes"] if x is not encontrado]
+    u["avisados"] = [x for x in u["avisados"] if x != encontrado.get("user_id")]
+    guardar_usuarios(u)
+    tb.send_message(chat_id, f"🚫 Solicitud de "
+                    f"{encontrado.get('nombre') or ref} rechazada.")
+
+
+def texto_pendientes():
+    u = cargar_usuarios()
+    if not u["pendientes"]:
+        return "Sin solicitudes pendientes."
+    lineas = ["⏳ Pendientes de autorizar:"]
+    for p in u["pendientes"]:
+        lineas.append(f"• {p.get('nombre') or '?'} (@{p.get('username') or '-'}, "
+                      f"id {p.get('user_id')}) - «autoriza {p.get('user_id')}» "
+                      f"o «rechaza {p.get('user_id')}»")
+    return "\n".join(lineas)
+
+
+def texto_usuarios():
+    owner = _load_json(OWNER_PATH, {})
+    u = cargar_usuarios()
+    lineas = [f"👑 Dueño: {owner.get('nombre', '?')} "
+              f"(id {owner.get('user_id', '?')})"]
+    if u["autorizados"]:
+        lineas.append("✅ Autorizados:")
+        for a in u["autorizados"]:
+            lineas.append(f"• {a.get('nombre') or '?'} "
+                          f"(@{a.get('username') or '-'}, id {a.get('user_id')})")
+    else:
+        lineas.append("Sin usuarios autorizados.")
+    if u["pendientes"]:
+        lineas.append(f"⏳ Pendientes: {len(u['pendientes'])}")
+    return "\n".join(lineas)
 
 
 def bucle_telegram(token, cfg):
@@ -354,10 +558,16 @@ def bucle_telegram(token, cfg):
                 msg = upd.message or upd.channel_post
                 if msg is None or not getattr(msg, "text", None):
                     continue
-                if not es_duenio(msg, cfg):
+                nivel, uid = nivel_acceso(msg, cfg)
+                if nivel == "sin_owner":
+                    registrar_dueno(tb, msg, cfg)
+                    nivel = "owner"
+                elif nivel is None:
+                    if msg.from_user is not None:
+                        gestionar_desconocido(tb, msg)
                     continue
                 accion, params = parse_comando(msg.text)
-                ejecutar(tb, msg.chat.id, accion, params, cfg)
+                ejecutar(tb, msg.chat.id, accion, params, cfg, nivel)
             if updates:
                 with open(OFFSET_PATH, "w") as f:
                     json.dump({"offset": offset}, f)
