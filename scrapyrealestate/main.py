@@ -990,6 +990,7 @@ def init():
 
     # comandos por Telegram (hilo aparte; solo responde al dueño)
     comandos.sembrar_config(data)
+    comandos.guardar_config(data)  # persiste los defaults nuevos
     threading.Thread(target=comandos.bucle_telegram,
                      args=(get_bot_token(), data), daemon=True).start()
     logger.info('ESCUCHA DE COMANDOS POR TELEGRAM ACTIVA')
