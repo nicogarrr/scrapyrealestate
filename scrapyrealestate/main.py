@@ -1,12 +1,13 @@
 #!/usr/bin/python3
 import re, html
-import sys, subprocess, telebot, time, os.path, os, logging, urllib.request, urllib.error, json, random
+import sys, subprocess, telebot, time, os.path, os, logging, urllib.request, urllib.error, json, random, threading
 from datetime import datetime
 from os import path
 from art import *
 from fake_useragent import UserAgent
 
 from scrapyrealestate.ingest import listing_key, numeric_price
+from scrapyrealestate import comandos
 from scrapyrealestate.parsing import append_url_fragment
 
 
@@ -275,6 +276,9 @@ def load_health():
 
 def update_health(portal, ok, tb, tg_chatID):
     # Avisa por el canal (una vez) si un portal encadena fallos; se resetea al recuperarse.
+    corto = portal.split('.')[0]
+    if corto in data.get('portales_silenciados', []):
+        return load_health()
     h = load_health()
     e = h.get(portal, {"fail": 0, "alerted": False})
     if ok:
@@ -885,6 +889,9 @@ def scrap_realestate(telegram_msg):
             portal_name = portal_url
             portal_name_url = ''
 
+        if portal_name in data.get('portales_off', []):
+            portal_counts[portal_name_url] = portal_counts.get(portal_name_url, 0)
+            continue
         if portal_name_url == 'idealista.com':
             spider = 'idealista_proxy' if proxy_idealista == 'on' else 'idealista'
             page1 = url + '?ordenado-por=fecha-publicacion-desc'
@@ -981,6 +988,12 @@ def init():
     init_logs()
     checks()
 
+    # comandos por Telegram (hilo aparte; solo responde al dueño)
+    comandos.sembrar_config(data)
+    threading.Thread(target=comandos.bucle_telegram,
+                     args=(get_bot_token(), data), daemon=True).start()
+    logger.info('ESCUCHA DE COMANDOS POR TELEGRAM ACTIVA')
+
     count = 0
     telegram_msg = False
     scrapy_rs_name = data['scrapy_rs_name'].replace("-", "_")
@@ -1006,7 +1019,17 @@ def init():
         count += 1
         rndtime = random.randint(3, 40) + int(data['time_update'])
         logger.info(f"SLEEPING {rndtime} SECONDS")
-        time.sleep(rndtime)
+        espera = rndtime
+        while espera > 0:
+            if os.path.exists(comandos.FORCE_PATH):
+                try:
+                    os.remove(comandos.FORCE_PATH)
+                except FileNotFoundError:
+                    pass
+                logger.info('CICLO FORZADO DESDE TELEGRAM')
+                break
+            time.sleep(5)
+            espera -= 5
 
 
 if __name__ == "__main__":
