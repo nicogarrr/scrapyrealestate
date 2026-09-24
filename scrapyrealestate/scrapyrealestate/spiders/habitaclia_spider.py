@@ -9,7 +9,10 @@ class HabitacliaSpider(CrawlSpider):
     allowed_domains = ["habitaclia.com"]
 
     def start_requests(self):
-        yield scrapy.Request(f'{self.start_urls}')
+        # callback explícito: con callback=None el engine no llegaba a
+        # llamar a parse en este proyecto (scrapy 2.11 + handler playwright).
+        yield scrapy.Request(f'{self.start_urls}', callback=self.parse,
+                             dont_filter=True)
 
     custom_settings = {
         'DEFAULT_REQUEST_HEADERS': {
@@ -31,13 +34,13 @@ class HabitacliaSpider(CrawlSpider):
         # habitaclia (grupo Adevinta) usa desde 2025 el motor de fotocasa:
         # listado renderizado en servidor como <article data-panot-component=
         # "link-box">. El markup viejo (div.list-item) ya no existe.
-        items = ScrapyrealestateItem()
         soup = BeautifulSoup(response.text, 'lxml')
         mslug = re.search(r'viviendas-([a-z_]+)\.htm', str(self.start_urls))
         slug_town = {'gijon': 'Gijón', 'oviedo': 'Oviedo',
                      'mieres': 'Mieres', 'siero': 'Siero'}.get(
                          mslug.group(1) if mslug else '', '')
         for card in soup.find_all('article'):
+            items = ScrapyrealestateItem()  # un item por tarjeta
             try:
                 title = card.get('aria-label', '').strip()
                 if not title or ' en ' not in title:
