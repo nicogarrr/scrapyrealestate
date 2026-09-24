@@ -99,17 +99,29 @@ def check_config():
     urls = get_urls(data)
     urls_ok = ''
     urls_ok_count = 0
+    portales_vistos = set()
     for portal in urls:
         for url in urls[portal]:
             if len(url.split('/')) > 2:
                 portal_url = url.split('/')[2]
                 portal_name = portal_url.split('.')[1]
                 urls_ok_count += 1
-                urls_ok += f'{portal_name} '
+                if portal_name not in portales_vistos:
+                    portales_vistos.add(portal_name)
+                    urls_ok += f'{portal_name} '
 
     if data['telegram_chatuserID'] is None:
         logger.error('EL CHAT ID DE TELEGRAM ESTÁ VACÍO')
         sys.exit()
+
+    # borra el mensaje de estado anterior para no acumular uno por arranque
+    try:
+        with open(STATUS_MSG_PATH) as f:
+            prev_id = json.load(f).get("message_id")
+        if prev_id:
+            tb.delete_message(data['telegram_chatuserID'], prev_id)
+    except Exception:
+        pass
 
     try:
         if data['start_msg'] == 'True':
@@ -130,6 +142,12 @@ def check_config():
         logger.error('EL CHAT ID DE TELEGRAM NO ES CORRECTO O EL BOT '
                      '@scrapyrealestatebot NO SE HA AÑADIDO BIEN AL CANAL')
         sys.exit()
+
+    try:
+        with open(STATUS_MSG_PATH, "w") as f:
+            json.dump({"message_id": info_message.message_id}, f)
+    except Exception:
+        pass
 
     logger.info(f"CANAL DE TELEGRAM {info_message.chat.title} VERIFICADO")
     return info_message
@@ -216,6 +234,7 @@ def get_urls(data):
 IDS_PATH = "./data/ids.json"
 HEALTH_PATH = "./data/health.json"
 STATUS_PATH = "./data/status.json"
+STATUS_MSG_PATH = "./data/status_msg.json"  # id del último mensaje de estado
 MAX_IDS = 100000          # cap de ids.json (se purgan los más antiguos)
 HEALTH_FAIL_THRESHOLD = 6  # ciclos seguidos sin resultados antes de avisar (~1,5h a 15 min)
 
