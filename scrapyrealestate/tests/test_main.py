@@ -97,3 +97,16 @@ def test_run_spider_returns_process_exit_code(monkeypatch, tmp_path):
     assert code == 7
     assert seen["check"] is False
     assert "pisoscom" in seen["command"]
+
+
+def test_update_pisos_guarda_url_y_zona():
+    pisos = {}
+    flat = {"href": "https://www.pisos.com/piso-123", "title": "Piso en Santa Marina-Uxo",
+            "rooms": "2 habs.", "site": "pisoscom", "neighbour": ""}
+    e = main.update_pisos(pisos, flat, 44000, 70, "Mieres")
+    assert e["url"] == "https://www.pisos.com/piso-123"
+    assert e["zona"] == "Santa Marina-Uxo"  # derivada del titulo
+    flat2 = {"href": "https://x/1", "title": "Piso", "neighbour": "La Villa",
+             "rooms": "", "site": "fotocasa"}
+    e2 = main.update_pisos(pisos, flat2, 90000, 80, "Mieres")
+    assert e2["zona"] == "La Villa"  # neighbour del portal manda
