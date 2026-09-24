@@ -1,7 +1,9 @@
 import scrapy
-from scrapy.spiders import CrawlSpider
 from bs4 import BeautifulSoup
+from scrapy.spiders import CrawlSpider
+
 from scrapyrealestate.items import ScrapyrealestateItem
+from scrapyrealestate.parsing import extract_listing_id, has_elevator_filter
 
 
 class PisoscomSpider(CrawlSpider):
@@ -9,135 +11,114 @@ class PisoscomSpider(CrawlSpider):
     allowed_domains = ["pisos.com"]
 
     def start_requests(self):
-        yield scrapy.Request(f'{self.start_urls}')
+        yield scrapy.Request(f"{self.start_urls}")
 
     custom_settings = {
-        'DEFAULT_REQUEST_HEADERS': {
-            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
-            'accept-encoding': 'gzip, deflate, br',
-            'accept-language': 'es-ES,es;q=0.9,ca;q=0.8,en;q=0.7',
-            'cache-control': 'max-age=0',
-            'sec-fetch-dest': 'document',
-            'sec-fetch-mode': 'navigate',
-            'sec-fetch-site': 'none',
-            'sec-fetch-user': '?1',
-            'sec-gpc': '1',
-            'upgrade-insecure-requests': '1',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36'
+        "DEFAULT_REQUEST_HEADERS": {
+            "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9",
+            "accept-encoding": "gzip, deflate, br",
+            "accept-language": "es-ES,es;q=0.9,ca;q=0.8,en;q=0.7",
+            "cache-control": "max-age=0",
+            "sec-fetch-dest": "document",
+            "sec-fetch-mode": "navigate",
+            "sec-fetch-site": "none",
+            "sec-fetch-user": "?1",
+            "sec-gpc": "1",
+            "upgrade-insecure-requests": "1",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36",
         }
     }
 
     def parse(self, response):
-        ids = []
-        same_id = False
-        items = ScrapyrealestateItem()
-        default_url = 'https://pisos.com'
-        soup = BeautifulSoup(response.text, 'lxml')
-        # Cada vivienda es un div.ad-preview__info.
-        flats = soup.find_all("div", {"class": "ad-preview__info"})
+        transaction = self._transaction(self.start_urls)
+        elevator_filter = has_elevator_filter(self.start_urls)
+        soup = BeautifulSoup(response.text, "lxml")
+        cards = soup.find_all("div", {"class": "ad-preview__info"})
+        seen_ids = set()
 
-        # Obtenemos si es alquiler o compra a partir de la url
-        if self.start_urls.split('/')[3] == 'alquiler':
-            type = 'rent'
-        elif self.start_urls.split('/')[3] == 'venta':
-            type = 'buy'
-
-        # Iteramos por cada vivienda y extraemos sus datos.
-        for nflat in range(len(flats)):
-            same_id = False
-            title_el = flats[nflat].find(class_="ad-preview__title")
-            if title_el is None or not title_el.get('href'):
-                continue  # tarjeta sin enlace (p. ej. promo): la saltamos
-            href = title_el['href']
-            title = title_el.text.strip()
-            # Municipio, calle y barrio. Ejemplos de titulo:
-            #   "Piso en Chamberi"
-            #   "Chamberi (Distrito Chamberi. Madrid)"
-            town = ''
-            neighbour = ''
-            street = ''
-            number = ''
-            street_ = ''
-            if len(title.split(',')) == 2:
-                street_ = title.split(',')[0]
-                number = title.split(',')[-1]
-            elif len(title.split(',')) == 1:
-                street_ = title.split(' en ')[-1]
-            # Solo lo tomamos como calle si el texto contiene un tipo de via.
-            street_keywords = ('calle', 'carrer', 'c.', 'avenida', 'avinguda', 'av.',
-                               'plaza', 'plaça', 'via', 'travessera', 'camino', 'cami',
-                               'paseo', 'passeig', 'passaje', 'passatge', 'carretera', 'ctra.')
-            if any(k in street_.lower() for k in street_keywords):
-                street = street_
-
-            town_el = flats[nflat].find(class_="p-sm")
-            town_ = town_el.text.strip() if town_el else ''
-            if '(' in town_:
-                neighbour = town_.split('(')[0][:-1]
-                town = town_[town_.find('(') + 1:town_.find(')')]
-                if 'Distrito' in town:
-                    if '.' in town:
-                        town = town.split('.')[-1].split(' ')[1]
-                    elif 'Capital' in town:
-                        town = town.replace('Capital', '').replace(' ', '')
-                elif 'Capital' in town:
-                    town = town.replace('Capital', '').replace(' ', '')
-            else:
-                town = town_
-            try:
-                if ' - ' in town:
-                    town = town.split(' - ')[0]
-                elif '-' in town_:
-                    town = town.split('-')[0]
-            except:
-                pass
-
-            try:
-                id = href.split('-')[2].split('_')[0]
-                # Si el id ya estaba en la lista, salimos
-                for id_ in ids:
-                    if id_ == id:
-                        same_id = True
-                        break
-            except:
-                id = ''
-
-            price_el = flats[nflat].find("span", {"class": "ad-preview__price"})
-            price = price_el.text.strip() if price_el else ''
-
-            # Las caracteristicas comparten clase y su orden varia (a veces falta
-            # habitaciones, etc.), asi que las clasificamos por contenido.
-            rooms = m2 = floor = ''
-            for c in flats[nflat].find_all("p", {"class": "ad-preview__char p-sm"}):
-                t = c.text.strip()
-                tl = t.lower()
-                if 'hab' in tl:
-                    rooms = t
-                elif 'm²' in tl or 'm2' in tl:
-                    m2 = t
-                elif 'planta' in tl or 'bajo' in tl:
-                    floor = t
-
-            # Si esta activado, pasamos al siguiente ya que repite ids
-            if same_id:
+        for card in cards:
+            title_el = card.find(class_="ad-preview__title")
+            if title_el is None or not title_el.get("href"):
                 continue
+
+            href = title_el["href"]
+            listing_id = extract_listing_id("pisoscom", href)
+            if listing_id in seen_ids:
+                continue
+            seen_ids.add(listing_id)
+
+            title = title_el.get_text(" ", strip=True)
+            town = ""
+            neighbour = ""
+            street = ""
+            number = ""
+            street_name = ""
+            if len(title.split(",")) == 2:
+                street_name = title.split(",")[0]
+                number = title.split(",")[-1]
+            elif len(title.split(",") ) == 1:
+                street_name = title.split(" en ")[-1]
+
+            street_keywords = (
+                "calle", "carrer", "c.", "avenida", "avinguda", "av.", "plaza",
+                "plaça", "via", "travessera", "camino", "cami", "paseo", "passeig",
+                "passaje", "passatge", "carretera", "ctra.",
+            )
+            if any(keyword in street_name.lower() for keyword in street_keywords):
+                street = street_name
+
+            subtitle_el = card.find(class_="ad-preview__subtitle")
+            subtitle = subtitle_el.get_text(" ", strip=True) if subtitle_el else ""
+            if "(" in subtitle:
+                neighbour = subtitle.split("(", 1)[0].rstrip()
+                town = subtitle.split("(", 1)[1].split(")", 1)[0].strip()
+                if "Distrito" in town:
+                    town = town.rsplit(".", 1)[-1].split(" ", 1)[-1]
+                town = town.replace("Capital", "").strip()
             else:
-                items['id'] = id
-                items['price'] = price
-                items['m2'] = m2
-                items['rooms'] = rooms
-                items['floor'] = floor
-                items['town'] = town
-                items['neighbour'] = neighbour
-                items['street'] = street
-                items['number'] = number
-                items['type'] = type
-                items['title'] = title
-                items['href'] = default_url + href
-                items['site'] = 'pisoscom'
-                ids.append(id)
+                town = subtitle
 
-                yield items
+            price_el = card.find("span", {"class": "ad-preview__price"})
+            price = price_el.get_text(" ", strip=True) if price_el else ""
+            rooms = m2 = floor = bathrooms = ""
+            for characteristic in card.find_all("p", {"class": "ad-preview__char p-sm"}):
+                text = characteristic.get_text(" ", strip=True)
+                lower = text.lower()
+                if "hab" in lower:
+                    rooms = text
+                elif "baño" in lower or "bano" in lower or "ba\u00f1" in lower:
+                    bathrooms = text
+                elif "m²" in lower or "m2" in lower:
+                    m2 = text
+                elif "planta" in lower or "bajo" in lower or "sótano" in lower:
+                    floor = text
 
-    # Procesamos tambien la primera pagina (no solo las paginadas).
+            item = ScrapyrealestateItem()
+            item["id"] = listing_id
+            item["price"] = price
+            item["m2"] = m2
+            item["rooms"] = rooms
+            item["bathrooms"] = bathrooms
+            item["floor"] = floor
+            item["elevator"] = True if elevator_filter else None
+            item["town"] = town
+            item["neighbour"] = neighbour
+            item["street"] = street
+            item["number"] = number
+            item["type"] = transaction
+            item["title"] = title
+            item["href"] = "https://www.pisos.com" + href
+            item["site"] = "pisoscom"
+            yield item
+
+    @staticmethod
+    def _transaction(url: str) -> str:
+        parts = (url or "").lower().split("/")
+        if "alquiler" in parts:
+            return "rent"
+        if "venta" in parts or "comprar" in parts:
+            return "buy"
+        return ""
+
+    # Procesamos también la primera página (no solo las paginadas).
     parse_start_url = parse
