@@ -1,12 +1,24 @@
-# Imagen publicada en Docker Hub. Datos efimeros: no se monta volumen
-# (la configuracion y el historico de avisos viven dentro del contenedor).
+# Despliegue propio: construye desde el código del fork (la imagen de
+# Docker Hub es solo x86 y este servidor es ARM). Datos persistentes en
+# ./data (config.json, ids.json, useragent.txt sobreviven a recreaciones).
+#
+# No se publica ningún puerto: la web de configuración solo arranca si falta
+# data/config.json, y en este despliegue la config ya viene en ./data.
 services:
-  scrapyrealestate:
-    image: mcrespov/scrapyrealestate:latest
-    container_name: scrapyrealestate
-    restart: always
-    # init: true arranca un init (tini) como PID 1 que recolecta los procesos
-    # zombie de Chromium; evita que se acumulen procesos "defunct".
+  flats-bot:
+    build: .
+    image: scrapyrealestate-asturias:latest
+    container_name: flats-bot-asturias
+    restart: unless-stopped
+    # init: tini como PID 1 recolecta los zombies de Chromium.
     init: true
-    ports:
-      - "8080:8080"
+    # .env (chmod 600, NO se commitea): TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID
+    env_file: .env
+    volumes:
+      - ./data:/scrapyrealestate/scrapyrealestate/data
+    # Límites para convivir con otras cargas del servidor (guardarraíl 2 OCPU/12GB).
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 1536M

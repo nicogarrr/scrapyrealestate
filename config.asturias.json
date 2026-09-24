@@ -1,0 +1,18 @@
+{
+  "scrapy_rs_name": "asturias",
+  "log_level": "INFO",
+  "log_level_scrapy": "WARNING",
+  "time_update": "900",
+  "telegram_chatuserID": "",
+  "telegram_bot_token": "",
+  "start_msg": "True",
+  "min_price": "0",
+  "max_price": "100000",
+  "url_idealista": ["https://www.idealista.com/venta-viviendas/asturias/con-precio-hasta_100000,ascensor/"],
+  "proxy_idealista": "off",
+  "url_pisoscom": ["https://www.pisos.com/venta/pisos-asturias/ascensor/hasta-100000"],
+  "url_fotocasa": ["https://www.fotocasa.es/es/comprar/viviendas/asturias/todas-las-zonas/ascensor/l?sortType=publicationDate&sortOrderDesc=true"],
+  "url_habitaclia": [],
+  "url_yaencontre": ["https://www.yaencontre.com/venta/pisos/asturias/f-ascensor"],
+  "send_first": "False"
+}

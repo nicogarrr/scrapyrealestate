@@ -9,18 +9,21 @@ from fake_useragent import UserAgent
 __license__ = "GPL"
 __version__ = "3.0.0"
 
-# Bot público por defecto. Se puede sobreescribir en la web de configuración
-# o con la variable de entorno TELEGRAM_BOT_TOKEN (ver get_bot_token).
-DEFAULT_BOT_TOKEN = '5042109408:AAHBrCsNiuI3lXBEiLjmyxqXapX4h1LHbJs'
+# No hay bot por defecto: el token lo pone el usuario en la web de
+# configuración o con la variable de entorno TELEGRAM_BOT_TOKEN (recomendado
+# en despliegue: así nunca se guarda en disco dentro de config.json).
 
 
 def get_bot_token():
-    # Prioridad: token de la web (config.json) > variable de entorno > por defecto.
+    # Prioridad: token de la web (config.json) > variable de entorno.
     try:
         token = data.get('telegram_bot_token', '')
     except NameError:
         token = ''
-    return token or os.environ.get('TELEGRAM_BOT_TOKEN') or DEFAULT_BOT_TOKEN
+    token = token or os.environ.get('TELEGRAM_BOT_TOKEN')
+    if not token:
+        raise SystemExit('FALTA EL TOKEN DE TELEGRAM: config.json o TELEGRAM_BOT_TOKEN')
+    return token
 
 # Por si fake-useragent falla.
 FALLBACK_USER_AGENT = (
@@ -75,6 +78,10 @@ def get_config():
         with open('./data/config.json') as json_file:
             global data
             data = json.load(json_file)
+        # Overrides de entorno para despliegue (docker): TELEGRAM_CHAT_ID
+        # permite fijar el canal sin rehacer config.json.
+        if os.environ.get('TELEGRAM_CHAT_ID'):
+            data['telegram_chatuserID'] = os.environ['TELEGRAM_CHAT_ID']
 
 
 def check_config():
@@ -244,7 +251,8 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
 
         # m2 a entero para el €/m²
         try:
-            m2 = int(''.join(char for char in flat.get('m2', '') if char.isdigit())[:-1])
+            m2_digits = ''.join(char for char in flat.get('m2', '') if char.isdigit())
+            m2 = int(m2_digits) if m2_digits else 0
             m2_tg = f'{m2}m²'
         except (ValueError, TypeError):
             m2 = flat.get('m2', 0) or 0
