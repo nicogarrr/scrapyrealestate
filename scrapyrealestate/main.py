@@ -616,6 +616,16 @@ def es_chollo(zonas, price, m2, town):
     return diff >= CHOLLO_UMBRAL, round(diff)
 
 
+def zona_de(flat):
+    """Barrio/zona del anuncio: neighbour del portal o derivado del titulo."""
+    z = str(flat.get('neighbour', '') or '').strip()
+    if z:
+        return z[:60]
+    t = str(flat.get('title', '') or '')
+    m = re.search(r'\ben\s+(.+)$', t)
+    return m.group(1).strip()[:60] if m else ''
+
+
 def update_pisos(pisos, flat, price, m2, town):
     href = str(flat.get('href', '') or '')
     if not href:
@@ -625,7 +635,9 @@ def update_pisos(pisos, flat, price, m2, town):
               "price": price if isinstance(price, int) else e.get("price"),
               "m2": m2 or e.get("m2"),
               "town": town, "rooms": str(flat.get('rooms', '') or ''),
-              "portal": flat.get('site', ''), "ts": int(time.time())})
+              "portal": flat.get('site', ''),
+              "url": href, "zona": zona_de(flat),
+              "ts": int(time.time())})
     pisos[href] = e
     return e
 
