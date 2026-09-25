@@ -245,6 +245,33 @@ def perfil_de_clave(key):
     return "piso"
 
 
+# El portal puede devolver una finca en una URL de pisos (o una casa en la
+# busqueda de terrenos). La URL es un indicio, no la tipologia del anuncio.
+TERRENO_RE = re.compile(
+    r"\b(?:terrenos?|parcelas?|solares?|suelo\s+(?:urbanizable|urbano|rustico|rústico)|"
+    r"fincas?\s+(?:r[uú]sticas?|edificables?))\b", re.I)
+CASA_RE = re.compile(r"\b(?:casas?|chalets?|chales?|villas?|adosados?|"
+                     r"pareados?|casonas?|caser[ií]os?)\b", re.I)
+
+
+def perfil_de_anuncio(flat, perfil_url):
+    """Clasifica evidencias explícitas del anuncio antes de calcular estadísticas.
+
+    Los títulos con casa y parcela son casas; una finca rústica sin mención
+    de vivienda es suelo. Si no hay evidencia, conserva el perfil de la URL.
+    """
+    title = str(flat.get("title") or "")
+    href = str(flat.get("href") or "")
+    # El slug de detalle puede ser finca_rustica; no usamos toda la URL de
+    # búsqueda ni la query string, que no describen la propiedad individual.
+    slug = href.split("?", 1)[0].rstrip("/").rsplit("/", 1)[-1].replace("_", "-").replace("-", " ")
+    if CASA_RE.search(title) or CASA_RE.search(slug):
+        return "casas"
+    if TERRENO_RE.search(title) or TERRENO_RE.search(slug):
+        return "terrenos"
+    return perfil_url
+
+
 def limites_perfil(perfil):
     """(min, max) de precio del perfil; piso usa los globales de la config."""
     if perfil == "piso":
@@ -378,7 +405,10 @@ def update_zonas(zonas, price, m2, town, perfil="piso"):
     if not t:
         return
     eurm2 = round(price / m2)
-    if not (100 <= eurm2 <= 10000):
+    # Suelo edificable/rústico tiene otra escala: 37,91 €/m² es una muestra
+    # válida de terreno, no una muestra descartable por el suelo de vivienda.
+    low, high = (1, 3000) if perfil == "terrenos" else (100, 10000)
+    if not (low <= eurm2 <= high):
         return
     e = zonas.setdefault(t, {"samples": []})
     e["samples"].append(eurm2)
@@ -401,7 +431,8 @@ def zona_tag(zonas, price, m2, town, perfil="piso"):
     eurm2 = price / m2
     diff = round((eurm2 - med) / med * 100)
     town_c = str(town).strip()
-    donde = f"casas en {town_c}" if perfil == "casas" else town_c
+    donde = (f"terrenos en {town_c}" if perfil == "terrenos" else
+             f"casas en {town_c}" if perfil == "casas" else town_c)
     if diff <= -20:
         return f"🔥 {abs(diff)}% bajo la media de {donde} ({med}€/m²) - posible chollo"
     if diff >= 20:
@@ -788,8 +819,7 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
         price = numeric_price(price_str)
         m2 = numeric_price(flat.get('m2', ''))
         m2_tg = f'{m2}m²' if m2 else ''
-        if resid:
-            update_zonas(zonas, price, m2, town, perfil)
+        update_zonas(zonas, price, m2, town, perfil)
         inv = update_pisos(pisos, flat, price, m2, town, perfil)
 
         if price is None:
@@ -813,7 +843,7 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
             if isinstance(old_price, int) and isinstance(price, int) and price != old_price:
                 entry["price"] = price
                 if price < old_price and within_range and telegram_msg:
-                    tags_bajada = ""
+                    tags_bajada = f"{zona_tag(zonas, price, m2, town, perfil)}\n" if not resid and zona_tag(zonas, price, m2, town, perfil) else ""
                     if resid:
                         tags_bajada = (
                             f"{zona_tag(zonas, price, m2, town, perfil)}\n"
@@ -878,7 +908,7 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
             except (ValueError, ZeroDivisionError, TypeError):
                 avg_price_m2 = ''
             zone = ' · '.join(x for x in (town.strip(), rooms.strip()) if x)
-            tags_nuevo = ""
+            tags_nuevo = f"{zona_tag(zonas, price, m2, town, perfil)}\n" if not resid and zona_tag(zonas, price, m2, town, perfil) else ""
             if resid:
                 tags_nuevo = (f"{zona_tag(zonas, price, m2, town, perfil)}\n"
                               f"{geo_tag(geo, title, town)}\n"
@@ -956,6 +986,15 @@ def page2_url(portal_name_url, url):
     if portal_name_url == 'habitaclia.com':
         return url + '?ordenar=mas_recientes&pagina=2'
     return None
+
+
+def clasificar_anuncios(por_perfil):
+    clasificados = {"piso": [], "terrenos": [], "casas": []}
+    for perfil_url, items in por_perfil.items():
+        for item in items:
+            if isinstance(item, dict):
+                clasificados[perfil_de_anuncio(item, perfil_url)].append(item)
+    return clasificados
 
 
 def scrap_realestate(telegram_msg):
@@ -1059,8 +1098,12 @@ def scrap_realestate(telegram_msg):
         return
 
     sent_new, sent_drops = 0, 0
-    for pfile, items in por_perfil.items():
-        if not items:
+    # Reagrupar por el tipo del ANUNCIO, no solo la URL de procedencia.
+    # Así una finca colada en resultados de pisos jamás contamina la mediana
+    # residencial ni recibe sus etiquetas o avisos privados.
+    clasificados = clasificar_anuncios(por_perfil)
+    for pfile, items in clasificados.items():
+        if not items or pfile in data.get('perfiles_off', []):
             continue
         out_p = out_file if pfile == 'piso' else out_file.replace(
             '.json', f'_{pfile}.json')
