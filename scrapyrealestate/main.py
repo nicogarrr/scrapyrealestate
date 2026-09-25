@@ -965,10 +965,14 @@ def scrap_realestate(telegram_msg):
     out_file = f"./data/{scrapy_rs_name}.json"
     tb = telebot.TeleBot(get_bot_token())
 
-    # todas las claves 'url_*' de la config, con su perfil (piso/terrenos/casas)
+    # claves url_<portal>[_perfil] de la config (patron estricto: llm_base_url
+    # y otras claves ajenas no son URLs de scrapeo)
     entradas = []
+    patron_url = re.compile(
+        r"^url_(idealista|pisoscom|fotocasa|habitaclia|yaencontre)"
+        r"(_(terrenos|casas))?$")
     for key in sorted(data):
-        if "url" not in key:
+        if not patron_url.match(key):
             continue
         perfil = perfil_de_clave(key)
         val = data[key]
