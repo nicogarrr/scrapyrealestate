@@ -35,7 +35,7 @@ class HabitacliaSpider(CrawlSpider):
         # listado renderizado en servidor como <article data-panot-component=
         # "link-box">. El markup viejo (div.list-item) ya no existe.
         soup = BeautifulSoup(response.text, 'lxml')
-        mslug = re.search(r'viviendas-([a-z_]+)\.htm', str(self.start_urls))
+        mslug = re.search(r'(?:viviendas|casas)-([a-z_]+)\.htm', str(self.start_urls))
         slug_town = {'gijon': 'Gijón', 'oviedo': 'Oviedo',
                      'mieres': 'Mieres', 'siero': 'Siero'}.get(
                          mslug.group(1) if mslug else '', '')

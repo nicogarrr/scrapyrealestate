@@ -229,6 +229,30 @@ def get_urls(data):
     return urls
 
 
+# --- Perfiles de busqueda: piso (original) + terrenos + casas ---
+# url_<portal>            -> piso (como siempre)
+# url_<portal>_terrenos   -> terrenos para construir
+# url_<portal>_casas      -> casas baratas (para reformar)
+PERFILES_EXTRA = ("terrenos", "casas")
+PERFIL_ETIQUETA = {"terrenos": "🏗️ <b>TERRENO</b>", "casas": "🏚️ <b>CASA</b>"}
+
+
+def perfil_de_clave(key):
+    """Perfil de una clave url_*: url_fotocasa_terrenos -> 'terrenos'."""
+    for p in PERFILES_EXTRA:
+        if str(key).endswith("_" + p):
+            return p
+    return "piso"
+
+
+def limites_perfil(perfil):
+    """(min, max) de precio del perfil; piso usa los globales de la config."""
+    if perfil == "piso":
+        return data["min_price"], data["max_price"]
+    tope = (data.get("perfil_max_precio") or {}).get(perfil, 0)
+    return "0", str(tope or 0)
+
+
 
 # --- Mejoras fork Nico: ids con metadatos, salud de portales, status ---
 
@@ -338,11 +362,19 @@ def norm_town(town):
     return re.sub(r'[^a-z0-9áéíóúñ]', '', str(town).lower())
 
 
-def update_zonas(zonas, price, m2, town):
+def zkey(perfil, town):
+    """Clave de zonas.json: piso conserva la clave legacy (ciudad pelada);
+    los demas perfiles van namespaced ('casas:mieres') para no contaminar
+    las medianas €/m² de pisos."""
+    t = norm_town(town)
+    return t if perfil == "piso" else f"{perfil}:{t}"
+
+
+def update_zonas(zonas, price, m2, town, perfil="piso"):
     """Acumula €/m² por ciudad (solo datos sanos)."""
     if not (isinstance(price, int) and isinstance(m2, int) and m2 >= 20 and price >= 5000):
         return
-    t = norm_town(town)
+    t = zkey(perfil, town)
     if not t:
         return
     eurm2 = round(price / m2)
@@ -354,11 +386,11 @@ def update_zonas(zonas, price, m2, town):
         e["samples"] = e["samples"][-ZONAS_MAX_MUESTRAS:]
 
 
-def zona_tag(zonas, price, m2, town):
+def zona_tag(zonas, price, m2, town, perfil="piso"):
     """Etiqueta de zona por €/m² vs mediana de la ciudad. Anota, nunca excluye."""
     if not (isinstance(price, int) and isinstance(m2, int) and m2 > 0):
         return ''
-    t = norm_town(town)
+    t = zkey(perfil, town)
     e = zonas.get(t)
     if not e or len(e["samples"]) < ZONAS_MIN_MUESTRAS:
         return ''
@@ -369,11 +401,12 @@ def zona_tag(zonas, price, m2, town):
     eurm2 = price / m2
     diff = round((eurm2 - med) / med * 100)
     town_c = str(town).strip()
+    donde = f"casas en {town_c}" if perfil == "casas" else town_c
     if diff <= -20:
-        return f"🔥 {abs(diff)}% bajo la media de {town_c} ({med}€/m²) - posible chollo"
+        return f"🔥 {abs(diff)}% bajo la media de {donde} ({med}€/m²) - posible chollo"
     if diff >= 20:
-        return f"💎 {diff}% sobre la media de {town_c} ({med}€/m²) - zona cotizada"
-    return f"≈ media de {town_c} ({med}€/m²)"
+        return f"💎 {diff}% sobre la media de {donde} ({med}€/m²) - zona cotizada"
+    return f"≈ media de {donde} ({med}€/m²)"
 
 
 
@@ -599,12 +632,12 @@ def save_pisos(ps):
         json.dump(ps, f)
 
 
-def es_chollo(zonas, price, m2, town):
-    """True si el piso está >=CHOLLO_UMBRAL% bajo la mediana €/m² de su ciudad."""
+def es_chollo(zonas, price, m2, town, perfil="piso"):
+    """True si está >=CHOLLO_UMBRAL% bajo la mediana €/m² de su ciudad."""
     if not (isinstance(price, int) and isinstance(m2, int) and m2 >= 30
             and 5000 <= price):
         return False, None
-    t = norm_town(town)
+    t = zkey(perfil, town)
     e = zonas.get(t)
     if not e or len(e["samples"]) < ZONAS_MIN_MUESTRAS:
         return False, None
@@ -652,9 +685,13 @@ def coincide_alerta(priv, town, zona):
     return True
 
 
-def avisos_privados(tb, cuerpo, town, zona):
-    """Manda el aviso por privado a cada usuario cuyo filtro case."""
+def avisos_privados(tb, cuerpo, town, zona, perfil="piso"):
+    """Manda el aviso por privado a cada usuario cuyo filtro case.
+    El campo opcional 'perfiles' del filtro limita por perfil
+    (por defecto ['piso']: los avisos existentes no cambian)."""
     for priv in cargar_alertas_privadas():
+        if perfil not in priv.get("perfiles", ["piso"]):
+            continue
         if not coincide_alerta(priv, town, zona):
             continue
         try:
@@ -663,7 +700,7 @@ def avisos_privados(tb, cuerpo, town, zona):
             logger.error(f'ERROR AVISO PRIVADO {priv.get("user_id")}: {e}')
 
 
-def update_pisos(pisos, flat, price, m2, town):
+def update_pisos(pisos, flat, price, m2, town, perfil="piso"):
     href = str(flat.get('href', '') or '')
     if not href:
         return None
@@ -672,7 +709,7 @@ def update_pisos(pisos, flat, price, m2, town):
               "price": price if isinstance(price, int) else e.get("price"),
               "m2": m2 or e.get("m2"),
               "town": town, "rooms": str(flat.get('rooms', '') or ''),
-              "portal": flat.get('site', ''),
+              "portal": flat.get('site', ''), "perfil": perfil,
               "url": href, "zona": zona_de(flat),
               "ts": int(time.time())})
     pisos[href] = e
@@ -703,10 +740,15 @@ def sigs_match(a, b):
 
 
 def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
-                    tg_chatID, telegram_msg, logger):
+                    tg_chatID, telegram_msg, logger, perfil="piso"):
     """Detecta viviendas no vistas (contra data/ids.json) y bajadas de precio,
     y envía por Telegram las que entran en el rango de precio.
-    Dedup 100% local, sin BD. Devuelve (nuevas enviadas, bajadas enviadas)."""
+    Dedup 100% local, sin BD. Devuelve (nuevas enviadas, bajadas enviadas).
+    perfil: 'piso' (etiquetas completas), 'casas' (stats namespaced) o
+    'terrenos' (sin tags residenciales: suelo no tiene mediana de vivienda)."""
+    resid = perfil != "terrenos"
+    etiq = PERFIL_ETIQUETA.get(perfil, "")
+    etiq_line = etiq + "\n" if etiq else ""
     tb = telebot.TeleBot(get_bot_token())
     ids = load_ids()
     zonas = load_zonas()
@@ -746,8 +788,9 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
         price = numeric_price(price_str)
         m2 = numeric_price(flat.get('m2', ''))
         m2_tg = f'{m2}m²' if m2 else ''
-        update_zonas(zonas, price, m2, town)
-        inv = update_pisos(pisos, flat, price, m2, town)
+        if resid:
+            update_zonas(zonas, price, m2, town, perfil)
+        inv = update_pisos(pisos, flat, price, m2, town, perfil)
 
         if price is None:
             continue
@@ -770,29 +813,34 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
             if isinstance(old_price, int) and isinstance(price, int) and price != old_price:
                 entry["price"] = price
                 if price < old_price and within_range and telegram_msg:
+                    tags_bajada = ""
+                    if resid:
+                        tags_bajada = (
+                            f"{zona_tag(zonas, price, m2, town, perfil)}\n"
+                            f"{geo_tag(geo, title, town)}\n"
+                            f"{seguridad_tag(town)}\n"
+                            f"{renta_tag(geo, rgeo, title, town)}\n")
                     cuerpo_bajada = (
+                        f"{etiq_line}"
                         f"🔻 <b>BAJADA: {old_price}€ → {price}€</b> [{m2_tg}]\n"
                         f"{html.escape(title)[:90]}\n"
-                        f"{zona_tag(zonas, price, m2, town)}\n"
-                        f"{geo_tag(geo, title, town)}\n"
-                        f"{seguridad_tag(town)}\n"
-                        f"{renta_tag(geo, rgeo, title, town)}\n"
+                        f"{tags_bajada}"
                         f"{html.escape(href)}")
                     try:
                         tb.send_message(tg_chatID, cuerpo_bajada,
                                         parse_mode='HTML')
                         avisos_privados(tb, cuerpo_bajada, town,
                                         (inv or {}).get("zona")
-                                        if inv else zona_de(flat))
+                                        if inv else zona_de(flat), perfil)
                         sent_drops += 1
                         if inv is not None:
-                            ch, diffc = es_chollo(zonas, price, m2, town)
+                            ch, diffc = es_chollo(zonas, price, m2, town, perfil)
                             if ch and not inv.get("chollo"):
                                 inv["chollo"] = True
                                 try:
                                     tb.send_message(
                                         tg_chatID,
-                                        f"🏆 <b>CHOLLO POR BAJADA: {diffc}% bajo la media de {town.strip()}</b>\n"
+                                        f"{etiq + ' ' if etiq else ''}🏆 <b>CHOLLO POR BAJADA: {diffc}% bajo la media de {town.strip()}</b>\n"
                                         f"{html.escape(title)[:90]}\n"
                                         f"{html.escape(href)}",
                                         parse_mode='HTML',
@@ -830,29 +878,34 @@ def check_new_flats(json_file_name, scrapy_rs_name, min_price, max_price,
             except (ValueError, ZeroDivisionError, TypeError):
                 avg_price_m2 = ''
             zone = ' · '.join(x for x in (town.strip(), rooms.strip()) if x)
-            cuerpo = (f"<b>{price_str}</b> [{m2_tg}] → {avg_price_m2}€/m²\n"
+            tags_nuevo = ""
+            if resid:
+                tags_nuevo = (f"{zona_tag(zonas, price, m2, town, perfil)}\n"
+                              f"{geo_tag(geo, title, town)}\n"
+                              f"{seguridad_tag(town)}\n"
+                              f"{renta_tag(geo, rgeo, title, town)}\n")
+            eurm2_txt = f" → {avg_price_m2}€/m²" if avg_price_m2 else ""
+            cuerpo = (f"{etiq_line}"
+                      f"<b>{price_str}</b> [{m2_tg}]{eurm2_txt}\n"
                       f"{html.escape(title)[:90]}\n"
                       f"{html.escape(zone)}\n"
-                      f"{zona_tag(zonas, price, m2, town)}\n"
-                      f"{geo_tag(geo, title, town)}\n"
-                      f"{seguridad_tag(town)}\n"
-                      f"{renta_tag(geo, rgeo, title, town)}\n"
+                      f"{tags_nuevo}"
                       f"{html.escape(href)}")
             try:
                 tb.send_message(tg_chatID, cuerpo, parse_mode='HTML')
             except telebot.apihelper.ApiTelegramException as e:
                 logger.error(f'ERROR ENVIANDO A TELEGRAM: {e}')
             avisos_privados(tb, cuerpo, town,
-                            inv.get("zona") if inv else zona_de(flat))
+                            inv.get("zona") if inv else zona_de(flat), perfil)
             time.sleep(3.05)
             if inv is not None:
-                ch, diffc = es_chollo(zonas, price, m2, town)
+                ch, diffc = es_chollo(zonas, price, m2, town, perfil)
                 if ch and not inv.get("chollo"):
                     inv["chollo"] = True
                     try:
                         tb.send_message(
                             tg_chatID,
-                            f"🏆 <b>CHOLLO: {diffc}% bajo la media de {town.strip()}</b>\n"
+                            f"{etiq + ' ' if etiq else ''}🏆 <b>CHOLLO: {diffc}% bajo la media de {town.strip()}</b>\n"
                             f"{html.escape(title)[:90]}\n"
                             f"{html.escape(href)}",
                             parse_mode='HTML',
@@ -912,15 +965,18 @@ def scrap_realestate(telegram_msg):
     out_file = f"./data/{scrapy_rs_name}.json"
     tb = telebot.TeleBot(get_bot_token())
 
-    # todas las claves 'url_*' de la config
-    urls = []
-    for key in data:
-        if "url" in key and isinstance(data[key], list):
-            urls += data[key]
-        elif "url" in key:
-            urls.append(data[key])
+    # todas las claves 'url_*' de la config, con su perfil (piso/terrenos/casas)
+    entradas = []
+    for key in sorted(data):
+        if "url" not in key:
+            continue
+        perfil = perfil_de_clave(key)
+        val = data[key]
+        for u in (val if isinstance(val, list) else [val]):
+            if u:
+                entradas.append((perfil, u))
 
-    urls_mixed = mix_list(urls)
+    urls_mixed = mix_list(entradas)
 
     process = subprocess.run(["scrapy", "list"], capture_output=True)
     if process.returncode != 0:
@@ -929,10 +985,7 @@ def scrap_realestate(telegram_msg):
 
     portal_counts = {}
 
-    for url in urls_mixed:
-        if url == '':
-            continue
-
+    for idx, (perfil, url) in enumerate(urls_mixed):
         portal_url = url.split('/')[2]
         portal_name = portal_url.split('.')[1]
         try:
@@ -943,6 +996,8 @@ def scrap_realestate(telegram_msg):
 
         if portal_name in data.get('portales_off', []):
             portal_counts[portal_name_url] = portal_counts.get(portal_name_url, 0)
+            continue
+        if perfil in data.get('perfiles_off', []):
             continue
         if portal_name_url == 'idealista.com':
             spider = 'idealista_proxy' if proxy_idealista == 'on' else 'idealista'
@@ -963,44 +1018,61 @@ def scrap_realestate(telegram_msg):
 
         logger.debug(f"SCRAPING PORTAL {portal_name_url} FROM {scrapy_rs_name}...")
 
-        # cada portal/página va a su propio tmp: permite salud por portal y merge limpio
+        # cada URL/página va a su propio tmp (antes se pisaban por portal y solo
+        # la última URL de cada portal llegaba al merge y a las alertas)
         portal_items = 0
-        tmp1 = f"./data/.tmp_{portal_name}_p1.json"
+        tmp1 = f"./data/.tmp_{idx}_{portal_name}_{perfil}_p1.json"
         os.path.exists(tmp1) and os.remove(tmp1)
         run_spider(spider, scrapy_log, tmp1, page1)
         portal_items += count_items(tmp1)
 
         p2 = page2_url(portal_name_url, url)
         if p2:
-            tmp2 = f"./data/.tmp_{portal_name}_p2.json"
+            tmp2 = f"./data/.tmp_{idx}_{portal_name}_{perfil}_p2.json"
             os.path.exists(tmp2) and os.remove(tmp2)
             run_spider(spider, scrapy_log, tmp2, p2)
             portal_items += count_items(tmp2)
 
-        portal_counts[portal_name_url] = portal_items
-        update_health(portal_name_url, portal_items > 0, tb, data['telegram_chatuserID'])
-        logger.debug(f"CRAWLED {portal_name.upper()} ({portal_items} items)")
+        portal_counts[portal_name_url] = portal_counts.get(portal_name_url, 0) + portal_items
+        logger.debug(f"CRAWLED {portal_name.upper()} [{perfil}] ({portal_items} items)")
 
-    # merge de todos los tmp en el fichero del ciclo
-    merged = []
+    # salud por portal agregada: sano si alguna de sus URLs dio items
+    for p_name, n in portal_counts.items():
+        update_health(p_name, n > 0, tb, data['telegram_chatuserID'])
+
+    # merge por perfil: cada tmp lleva indice_portal_perfil en el nombre
+    por_perfil = {}
     for f in os.listdir('./data'):
         if f.startswith('.tmp_') and f.endswith('.json'):
-            merged += load_items(f'./data/{f}')
+            m = re.match(r'\.tmp_\d+_\w+_(\w+)_p\d\.json', f)
+            pfile = m.group(1) if m else 'piso'
+            por_perfil.setdefault(pfile, [])
+            por_perfil[pfile] += load_items(f'./data/{f}')
             os.remove(f'./data/{f}')
-    with open(out_file, 'w') as file:
-        json.dump(merged, file)
 
-    if not merged:
+    if not any(por_perfil.values()):
         logger.warning(f"NO SE GENERARON RESULTADOS EN ESTE CICLO")
         return
 
-    sent_new, sent_drops = check_new_flats(out_file,
-                                           scrapy_rs_name,
-                                           data['min_price'],
-                                           data['max_price'],
-                                           data['telegram_chatuserID'],
-                                           telegram_msg,
-                                           logger)
+    sent_new, sent_drops = 0, 0
+    for pfile, items in por_perfil.items():
+        if not items:
+            continue
+        out_p = out_file if pfile == 'piso' else out_file.replace(
+            '.json', f'_{pfile}.json')
+        with open(out_p, 'w') as file:
+            json.dump(items, file)
+        pmin, pmax = limites_perfil(pfile)
+        n, d = check_new_flats(out_p,
+                               scrapy_rs_name,
+                               pmin,
+                               pmax,
+                               data['telegram_chatuserID'],
+                               telegram_msg,
+                               logger,
+                               perfil=pfile)
+        sent_new += n
+        sent_drops += d
     write_status(portal_counts, sent_new, sent_drops)
 
 

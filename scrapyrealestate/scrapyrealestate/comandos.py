@@ -22,6 +22,11 @@ PORTALES = {"idealista": "idealista.com", "pisos": "pisos.com",
             "pisoscom": "pisos.com", "fotocasa": "fotocasa.es",
             "yaencontre": "yaencontre.com", "habitaclia": "habitaclia.com"}
 
+# palabra -> perfil de busqueda (on/off por comando)
+PERFILES_CMD = {"terreno": "terrenos", "terrenos": "terrenos",
+                "solar": "terrenos", "solares": "terrenos",
+                "casa": "casas", "casas": "casas"}
+
 # slugs que no siguen la regla general
 SLUG_PC = {"gijon": "pisos-gijon_concejo_xixon_conceyu_gijon"}
 SLUG_FC = {"mieres": "mieres-asturias"}
@@ -70,6 +75,13 @@ def sembrar_config(cfg):
     cfg.setdefault("llm_base_url", "")
     cfg.setdefault("llm_model", "")
     cfg.setdefault("tunel_email", "")             # email push del tunel (formsubmit)
+    cfg.setdefault("perfiles_off", [])            # perfiles desactivados (terrenos/casas)
+    cfg.setdefault("perfil_max_precio", {"terrenos": 100000, "casas": 100000})
+    cfg.setdefault("url_fotocasa_terrenos", [])
+    cfg.setdefault("url_pisoscom_terrenos", [])
+    cfg.setdefault("url_fotocasa_casas", [])
+    cfg.setdefault("url_pisoscom_casas", [])
+    cfg.setdefault("url_habitaclia_casas", [])
 
 
 def guardar_config(cfg):
@@ -99,6 +111,12 @@ def parse_comando(texto):
         for nombre in PORTALES:
             if re.search(rf"\b{nombre}\b", t):
                 return nombre
+        return None
+
+    def perfil_en(t):
+        for nombre, perfil in PERFILES_CMD.items():
+            if re.search(rf"\b{nombre}\b", t):
+                return perfil
         return None
 
     if re.search(r"\b(ayuda|help|comandos|que puedes)\b", t):
@@ -136,10 +154,16 @@ def parse_comando(texto):
         if p:
             return "silenciar", {"portal": p}
     if re.search(r"\b(activa|enciende|reactiva)\b", t):
+        pf = perfil_en(t)
+        if pf:
+            return "perfil_activar", {"perfil": pf}
         p = portal_en(t)
         if p:
             return "activar", {"portal": p}
     if re.search(r"\b(apaga|desactiva)\b", t):
+        pf = perfil_en(t)
+        if pf:
+            return "perfil_apagar", {"perfil": pf}
         p = portal_en(t)
         if p:
             return "apagar", {"portal": p}
@@ -157,6 +181,8 @@ def parse_comando(texto):
 
     m = re.search(r"\b(anade|anadir|agrega|mete|incluye|suma)\b\s+(?:a\s+)?([a-zñ][a-zñ \-]*?)\s*$", t)
     if m:
+        if perfil_en(m.group(2)):
+            return "perfil_activar", {"perfil": perfil_en(m.group(2))}
         p = PORTALES.get(m.group(2).strip())
         if p:
             return "activar", {"portal": m.group(2).strip()}
@@ -166,6 +192,8 @@ def parse_comando(texto):
         nombre = m.group(2).strip()
         if nombre.startswith("@") or nombre.isdigit():
             return "usuario_del", {"ref": nombre}
+        if perfil_en(nombre):
+            return "perfil_apagar", {"perfil": perfil_en(nombre)}
         if nombre in PORTALES:
             return "apagar", {"portal": nombre}
         return "municipio_del", {"nombre": nombre}
@@ -231,6 +259,15 @@ def texto_estado(cfg):
     lineas = [f"📊 <b>Estado</b> · hasta {fmt_eur(cfg.get('max_price', 0))}"
               f" · min {fmt_eur(cfg.get('min_price', 0))}",
               "🏘️ " + ", ".join(cfg.get("municipios", []))]
+    pm = cfg.get("perfil_max_precio") or {}
+    off = cfg.get("perfiles_off", [])
+    pf_txt = []
+    for pf, ico in (("terrenos", "🏗️"), ("casas", "🏚️")):
+        if pf in off:
+            pf_txt.append(f"{ico} {pf}: apagado")
+        else:
+            pf_txt.append(f"{ico} {pf}: hasta {fmt_eur(pm.get(pf, 0))}")
+    lineas.append(" · ".join(pf_txt))
     for portal, n in counts.items():
         corto = portal.split(".")[0]
         if corto in cfg.get("portales_off", []):
@@ -251,6 +288,7 @@ AYUDA = ("Puedes hablarme normal. Entiendo cosas como:\n"
          "• «máximo 90.000» / «mínimo 50k» — cambia el presupuesto\n"
          "• «añade Avilés» / «quita Mieres» — cambia los municipios\n"
          "• «apaga idealista» / «activa yaencontre» — portales on/off\n"
+         "• «apaga terrenos» / «activa casas» — perfiles on/off\n"
          "• «silencia idealista» — sin avisos de salud de ese portal\n"
          "• «busca ahora» — fuerza un ciclo al momento\n"
          "• «estado» — cómo va todo\n"
@@ -332,6 +370,19 @@ def ejecutar(tb, chat_id, accion, params, cfg, nivel="owner"):
                                        if x != p]
         guardar_config(cfg)
         tb.send_message(chat_id, f"✅ {p} activo otra vez (y con avisos).")
+    elif accion == "perfil_apagar":
+        pf = params["perfil"]
+        off = cfg.setdefault("perfiles_off", [])
+        if pf not in off:
+            off.append(pf)
+            guardar_config(cfg)
+        tb.send_message(chat_id, f"🔇 Perfil «{pf}» apagado: dejo de buscar "
+                        f"{pf}. «Activa {pf}» para volver.")
+    elif accion == "perfil_activar":
+        pf = params["perfil"]
+        cfg["perfiles_off"] = [x for x in cfg.get("perfiles_off", []) if x != pf]
+        guardar_config(cfg)
+        tb.send_message(chat_id, f"✅ Perfil «{pf}» activo: vuelvo a buscar {pf}.")
     elif accion == "silenciar":
         p = params["portal"]
         sil = cfg.setdefault("portales_silenciados", [])

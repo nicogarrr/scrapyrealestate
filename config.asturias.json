@@ -39,5 +39,28 @@
     "https://www.yaencontre.com/venta/pisos/mieres/f-ascensor",
     "https://www.yaencontre.com/venta/pisos/siero/f-ascensor"
   ],
-  "send_first": "False"
+  "send_first": "False",
+  "perfiles_off": [],
+  "perfil_max_precio": {
+    "terrenos": 100000,
+    "casas": 100000
+  },
+  "url_fotocasa_terrenos": [
+    "https://www.fotocasa.es/es/comprar/terrenos/asturias-provincia/todas-las-zonas/l?maxPrice=100000&sortType=publicationDate&sortOrderDesc=true"
+  ],
+  "url_pisoscom_terrenos": [
+    "https://www.pisos.com/venta/terrenos-asturias/hasta-100000"
+  ],
+  "url_fotocasa_casas": [
+    "https://www.fotocasa.es/es/comprar/chalets/asturias-provincia/todas-las-zonas/l?maxPrice=100000&sortType=publicationDate&sortOrderDesc=true"
+  ],
+  "url_pisoscom_casas": [
+    "https://www.pisos.com/venta/casas-asturias/hasta-100000"
+  ],
+  "url_habitaclia_casas": [
+    "https://www.habitaclia.com/casas-gijon.htm",
+    "https://www.habitaclia.com/casas-oviedo.htm",
+    "https://www.habitaclia.com/casas-mieres.htm",
+    "https://www.habitaclia.com/casas-siero.htm"
+  ]
 }
