@@ -101,8 +101,8 @@ def test_terreno_no_contamina_zonas_pisos(tmp_path, monkeypatch):
     flats = [_flat(40000, 800, "Mieres", title="Solar en Mieres")]
     _run_check(tmp_path, monkeypatch, flats, "terrenos", 100000, bot)
     zonas = json.loads((tmp_path / "data" / "zonas.json").read_text())
-    assert zonas == {} or all(not k.startswith("terrenos") and ":" not in k
-                              for k in zonas)
+    assert "mieres" not in zonas
+    assert zonas["terrenos:mieres"]["samples"] == [50]
 
 
 def test_casa_namespaces_zonas(tmp_path, monkeypatch):
@@ -202,3 +202,58 @@ def test_habitaclia_slug_casas():
     m2 = re.search(r'(?:viviendas|casas)-([a-z_]+)\.htm',
                    "https://www.habitaclia.com/viviendas-mieres.htm")
     assert m2 and m2.group(1) == "mieres"
+
+
+def test_finca_colada_en_url_pisos_se_clasifica_como_terreno():
+    flat = _flat(100000, 2638, "Siero", title="Finca rústica en Granda-Tiñana-Hevia",
+                 href="https://www.pisos.com/comprar/finca_rustica-granda_123/")
+    assert main.perfil_de_anuncio(flat, "piso") == "terrenos"
+    assert main.perfil_de_anuncio(flat, "casas") == "terrenos"
+    assert main.perfil_de_anuncio(_flat(70000, 100, "Siero", title="Casa con parcela"),
+                                 "terrenos") == "casas"
+    assert main.perfil_de_anuncio(_flat(90000, 80, "Siero", title="Piso céntrico"),
+                                 "piso") == "piso"
+
+
+def test_mediana_terrenos_sin_cruce_y_sin_etiquetas_residenciales(tmp_path, monkeypatch):
+    bot = FakeBot("t")
+    # Repro de la alerta: una mediana residencial existente de 1.301€/m²
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "zonas.json").write_text(json.dumps({
+        "siero": {"samples": [1301] * 20},
+        "terrenos:siero": {"samples": [38] * 20},
+        "casas:siero": {"samples": [800] * 20},
+    }))
+    finca = _flat(100000, 2638, "Siero", title="Finca rústica en Granda-Tiñana-Hevia",
+                  href="https://www.pisos.com/comprar/finca_rustica-granda_123/")
+    assert main.perfil_de_anuncio(finca, "piso") == "terrenos"
+    _run_check(tmp_path, monkeypatch, [finca], "terrenos", 100000, bot)
+    cuerpo = bot.sent[0][1]
+    assert "TERRENO" in cuerpo
+    assert "terrenos en Siero (38€/m²)" in cuerpo
+    for incompatible in ("1301", "1.301", "parques", "bares", "bus", "coles", "renta", "infracciones"):
+        assert incompatible not in cuerpo
+    zonas = json.loads((data_dir / "zonas.json").read_text())
+    assert zonas["siero"]["samples"] == [1301] * 20
+    assert zonas["casas:siero"]["samples"] == [800] * 20
+    assert 38 in zonas["terrenos:siero"]["samples"]
+
+
+def test_no_hay_mediana_terrenos_sin_muestra_propia():
+    zonas = {"siero": {"samples": [1301] * 20}}
+    assert main.zona_tag(zonas, 100000, 2638, "Siero", "terrenos") == ""
+    assert main.es_chollo(zonas, 100000, 2638, "Siero", "terrenos") == (False, None)
+
+
+def test_reagrupacion_real_por_anuncio_no_por_url():
+    finca = _flat(100000, 2638, "Siero", title="Finca rústica en Granda",
+                  href="https://www.pisos.com/comprar/finca_rustica-granda/")
+    piso = _flat(90000, 80, "Siero", title="Piso con ascensor")
+    casa = _flat(80000, 110, "Siero", title="Casa en Siero")
+    clasificados = main.clasificar_anuncios({"piso": [finca, piso],
+                                            "terrenos": [casa]})
+    assert clasificados == {"piso": [piso], "terrenos": [finca],
+                            "casas": [casa]}
+    solo_slug = dict(finca, title="Oportunidad en Siero")
+    assert main.perfil_de_anuncio(solo_slug, "piso") == "terrenos"
