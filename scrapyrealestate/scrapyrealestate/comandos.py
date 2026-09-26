@@ -209,8 +209,27 @@ def mediana(lst):
     return lst[len(lst) // 2] if lst else None
 
 
+def _norm_town(town):
+    # Copia de main.norm_town (main importa comandos: importar main seria
+    # circular). Misma regla: minusculas, solo [a-z0-9áéíóúñ].
+    return re.sub(r'[^a-z0-9áéíóúñ]', '', str(town).lower())
+
+
+def _clave_zona(perfil, town):
+    """Replica main.zkey: piso conserva la clave legacy (ciudad pelada);
+    terrenos/casas van namespaced ('terrenos:mieres') para no mezclar
+    medianas €/m² entre perfiles."""
+    t = _norm_town(town)
+    return t if perfil == "piso" else f"{perfil}:{t}"
+
+
+# etiqueta corta por perfil en la lista de chollos (piso no lleva)
+PERFIL_TAG_CHOLLO = {"terrenos": "🏗️ TERRENO", "casas": "🏚️ CASA"}
+
+
 def chollos_actuales(top=5, umbral=25.0):
-    """Top chollos del inventario: % bajo la mediana €/m² de su ciudad."""
+    """Top chollos del inventario: % bajo la mediana €/m² de su perfil y
+    ciudad (cada entrada contra la mediana de su perfil, como las alertas)."""
     try:
         pisos = json.load(open("./data/pisos.json"))
         zonas = json.load(open("./data/zonas.json"))
@@ -225,7 +244,12 @@ def chollos_actuales(top=5, umbral=25.0):
         price, m2 = e.get("price"), e.get("m2")
         if not (isinstance(price, int) and isinstance(m2, int) and m2 >= 30):
             continue
-        med = meds.get(norm(e.get("town", "")))
+        perfil = e.get("perfil") or "piso"  # inventario antiguo: sin perfil
+        if perfil == "piso":
+            clave = norm(e.get("town", ""))  # comportamiento de siempre
+        else:
+            clave = _clave_zona(perfil, e.get("town", ""))
+        med = meds.get(clave)
         if not med or med <= 0:
             continue
         diff = (med - price / m2) / med * 100
@@ -244,8 +268,10 @@ def texto_chollos():
     for diff, e, href in top:
         zona = e.get("town", "").strip()
         m2 = e.get("m2")
+        tag = PERFIL_TAG_CHOLLO.get(e.get("perfil") or "piso", "")
         lineas.append(
-            f"• <b>{fmt_eur(e['price'])}</b> · {m2}m² · {zona} · -{diff}%\n{href}")
+            f"• {tag + ' · ' if tag else ''}<b>{fmt_eur(e['price'])}</b>"
+            f" · {m2}m² · {zona} · -{diff}%\n{href}")
     return "\n".join(lineas)
 
 
