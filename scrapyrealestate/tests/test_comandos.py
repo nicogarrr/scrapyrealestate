@@ -120,3 +120,82 @@ def test_enviar_respuestas(tmp_path, monkeypatch):
     # archivo inexistente: no pasa nada
     dest.unlink()
     assert comandos.enviar_respuestas(tb) == 0
+
+
+def _siembra_datos(tmp_path, monkeypatch, zonas, pisos):
+    import json as _json
+    d = tmp_path / "data"
+    d.mkdir(exist_ok=True)
+    (d / "zonas.json").write_text(_json.dumps(zonas))
+    (d / "pisos.json").write_text(_json.dumps(pisos))
+    monkeypatch.chdir(tmp_path)
+
+
+def test_chollos_terreno_usa_mediana_terrenos(tmp_path, monkeypatch):
+    """Un terreno se compara con la mediana de terrenos de su municipio,
+    no con la de pisos (antes cualquier entrada usaba la de vivienda)."""
+    _siembra_datos(tmp_path, monkeypatch,
+                   zonas={"mieres": {"samples": [1000] * 20},
+                          "terrenos:mieres": {"samples": [100] * 20}},
+                   pisos={"http://x/t1": {"price": 8000, "m2": 100,
+                                          "town": "Mieres",
+                                          "perfil": "terrenos"}})
+    # 80 €/m² vs mediana terrenos 100: -20% (< 25) -> no es chollo.
+    # Con la mediana de pisos (1000) habría salido como -92% (bug).
+    assert comandos.chollos_actuales() == []
+
+
+def test_chollos_terreno_chollo_con_su_mediana(tmp_path, monkeypatch):
+    """Un terreno sí sale como chollo cuando está ≥25% bajo la mediana
+    de terrenos de su municipio."""
+    _siembra_datos(tmp_path, monkeypatch,
+                   zonas={"mieres": {"samples": [1000] * 20},
+                          "terrenos:mieres": {"samples": [100] * 20}},
+                   pisos={"http://x/t2": {"price": 7000, "m2": 100,
+                                          "town": "Mieres",
+                                          "perfil": "terrenos"}})
+    top = comandos.chollos_actuales()
+    assert len(top) == 1
+    diff, e, href = top[0]
+    assert diff == 30 and href == "http://x/t2"
+    assert "TERRENO" in comandos.texto_chollos()
+
+
+def test_chollos_casa_usa_mediana_casas(tmp_path, monkeypatch):
+    """Una casa se compara con la mediana de casas, no con la de pisos."""
+    _siembra_datos(tmp_path, monkeypatch,
+                   zonas={"oviedo": {"samples": [2000] * 20},
+                          "casas:oviedo": {"samples": [800] * 20}},
+                   pisos={"http://x/c1": {"price": 64000, "m2": 100,
+                                          "town": "Oviedo",
+                                          "perfil": "casas"}})
+    # 640 €/m² vs casas 800: -20% -> no chollo (vs pisos 2000 sería -68%).
+    assert comandos.chollos_actuales() == []
+
+
+def test_chollos_piso_comportamiento_intacto(tmp_path, monkeypatch):
+    """Pisos: misma clave y mismo resultado que antes del cambio."""
+    pisos = {"http://x/p1": {"price": 60000, "m2": 80, "town": "Mieres",
+                             "perfil": "piso"},
+             "http://x/p2": {"price": 70000, "m2": 80, "town": "Mieres"}}
+    zonas = {"mieres": {"samples": [1000] * 20},
+             "terrenos:mieres": {"samples": [100] * 20}}
+    _siembra_datos(tmp_path, monkeypatch, zonas=zonas, pisos=pisos)
+    top = comandos.chollos_actuales()
+    # p1: 750 vs 1000 -> -25% (chollo). p2 (sin perfil, legado): 875 -> -12%.
+    assert [h for _, _, h in top] == ["http://x/p1"]
+    texto = comandos.texto_chollos()
+    assert "🏗️" not in texto and "🏚️" not in texto
+    assert "-25%" in texto
+
+
+def test_chollos_terreno_sin_medianas_perfil_no_sale(tmp_path, monkeypatch):
+    """Sin medianas de terrenos suficientes, un terreno no cae en la
+    mediana de pisos: simplemente no sale."""
+    _siembra_datos(tmp_path, monkeypatch,
+                   zonas={"mieres": {"samples": [1000] * 20},
+                          "terrenos:mieres": {"samples": [100] * 5}},
+                   pisos={"http://x/t3": {"price": 7000, "m2": 100,
+                                          "town": "Mieres",
+                                          "perfil": "terrenos"}})
+    assert comandos.chollos_actuales() == []

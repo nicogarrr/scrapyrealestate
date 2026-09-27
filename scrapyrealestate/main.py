@@ -417,7 +417,7 @@ def update_zonas(zonas, price, m2, town, perfil="piso"):
 
 
 def zona_tag(zonas, price, m2, town, perfil="piso"):
-    """Etiqueta de zona por €/m² vs mediana de la ciudad. Anota, nunca excluye."""
+    """Etiqueta de zona por €/m² vs mediana de su perfil. Anota, nunca excluye."""
     if not (isinstance(price, int) and isinstance(m2, int) and m2 > 0):
         return ''
     t = zkey(perfil, town)
@@ -644,7 +644,7 @@ def renta_tag(geo, rgeo, title, town):
 
 PISOS_PATH = "./data/pisos.json"
 PISOS_MAX = 2000        # inventario durable de pisos vistos
-CHOLLO_UMBRAL = 25.0    # % bajo la mediana de la ciudad para marcar CHOLLO
+CHOLLO_UMBRAL = 25.0    # % bajo la mediana de su perfil para marcar CHOLLO
 
 
 def load_pisos():
