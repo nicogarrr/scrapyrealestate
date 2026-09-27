@@ -263,8 +263,8 @@ def texto_chollos():
     top = chollos_actuales()
     if not top:
         return ("No tengo chollos claros ahora mismo (nada ≥25% bajo la "
-                "mediana de su ciudad). Te aviso en cuanto salga uno 🏆")
-    lineas = ["🏆 <b>CHOLLOS AHORA</b> (vs mediana de su ciudad):"]
+                "mediana de su perfil). Te aviso en cuanto salga uno 🏆")
+    lineas = ["🏆 <b>CHOLLOS AHORA</b> (vs mediana de su perfil):"]
     for diff, e, href in top:
         zona = e.get("town", "").strip()
         m2 = e.get("m2")
