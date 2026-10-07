@@ -185,3 +185,11 @@ Basado en [mferark/scrapyrealestate](https://github.com/mferark/scrapyrealestate
 ## Colaborar
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/mcrespov)
+
+## Migracion
+
+El bot se retiro de la VM (2026-10-08). Este repo es un fork publico: solo codigo, sin datos ni credenciales.
+
+- El estado (data/) no se conservo. Al relanzar, los anuncios ya vistos se vuelven a enviar una vez.
+- El token del bot de Telegram va en config.json (ver README-fork.md) y no esta en el repo. Se regenera con BotFather (/token).
+- El resto de la configuracion de portales esta en config.asturias.json.
