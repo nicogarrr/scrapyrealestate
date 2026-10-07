@@ -1,0 +1,7 @@
+# SOLO PARA EL SETUP INICIAL: expone la web de config en 8081.
+# Usar: docker compose -f docker-compose.yml -f docker-compose.setup.yml up -d
+# Cuando data/config.json existe, la web no arranca y este puerto queda muerto.
+services:
+  flats-bot:
+    ports:
+      - "8081:8080"
