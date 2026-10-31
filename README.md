@@ -1,53 +1,50 @@
-# Scrapyrealestate
+# scrapyrealestate
 
-Rastrea varios portales inmobiliarios y avisa por Telegram de las viviendas
-nuevas que cumplen tus criterios.
+> Language: **English** | [Español](README.es.md)
 
-Corre en bucle: cada X segundos lanza los spiders, compara con lo ya visto y, si
-aparece una vivienda nueva dentro de tu rango de precio, la publica en tu canal.
+Tracks several Spanish real-estate portals and alerts you on Telegram about new listings that match your criteria.
 
-Es una versión refactorizada del proyecto original. Lo más importante que cambia:
-ya no usa MongoDB (la deduplicación es local, no se manda nada fuera), todo se
-configura en la web (incluido el token de Telegram), las dependencias están
-fijadas y los spiders de Fotocasa y Yaencontre se han reescrito.
+**Problem it solves:** new listings in good areas disappear within hours. Instead of refreshing five portals by hand, you get a Telegram message the moment something new shows up in your price range.
 
-## Cómo funciona
+It runs in a loop: every X seconds it runs the spiders, compares against what it has already seen and, if a new listing falls inside your price range, posts it to your channel.
 
-Rastrea Idealista, Pisos.com, Fotocasa, Habitaclia y Yaencontre. Para saber qué es
-nuevo guarda en `data/ids.json` los `id` ya avisados y compara contra ahí; lo que
-entra en el rango de precio se manda al canal de Telegram. No hay base de datos ni
-telemetría.
+This is a refactored version of the original project. The most important changes: it no longer uses MongoDB (deduplication is local, nothing is sent anywhere), everything is configured from a web page (including the Telegram token), dependencies are pinned and the Fotocasa and Yaencontre spiders were rewritten.
 
-## Requisitos
+## How it works
 
-- Docker (lo más cómodo), o Python 3.9+ con `requirements.txt`.
-- Un canal de Telegram con el bot añadido como administrador (ver abajo).
+```text
+Idealista, Pisos.com, Fotocasa, Habitaclia, Yaencontre
+        |  spiders (Scrapy + Playwright/Chromium)
+        v
+local deduplication (data/ids.json, no database, no telemetry)
+        |  new listing inside your price range
+        v
+your Telegram channel (your own bot)
+```
 
-## Docker
+## Requirements
 
-Imagen publicada en Docker Hub: `mcrespov/scrapyrealestate`.
+- Docker (easiest), or Python 3.9+ with `requirements.txt`.
+- A Telegram channel with your bot (see below).
 
-Ejecutar (Docker descarga la imagen sola la primera vez):
+## With Docker
 
 ```bash
-docker run -d \
-  --name scrapyrealestate \
-  --restart=always \
-  -p 8080:8080 \
+docker run -d --name scrapyrealestate --restart=always -p 8080:8080 \
   mcrespov/scrapyrealestate:latest
 ```
 
-El `-p 8080:8080` expone la web de configuración del primer arranque. Los datos
-(`config.json`, `ids.json`, `useragent.txt`) son efímeros: viven dentro del
-contenedor. Un `docker restart` los conserva, pero si borras o recreas el
-contenedor se pierden y tendrás que volver a configurarlo por la web (y el
-histórico de avisos empieza de cero). Para una segunda instancia cambia nombre y
-puerto (`-p 8081:8080`).
+The `-p 8080:8080` exposes the first-boot configuration web page. The data
+(`config.json`, `ids.json`, `useragent.txt`) is ephemeral: it lives inside the
+container. A `docker restart` keeps it, but if you delete or recreate the
+container it is lost and you will have to configure it again through the web
+page (and the alert history starts from zero). For a second instance, change
+the name and port (`-p 8081:8080`).
 
-La imagen arranca bajo `tini` como PID 1, que recolecta los procesos zombie
-(`defunct`) que deja Chromium; sin él se acumulan tras muchos ciclos y agotan los
-PID del sistema. Si usas una imagen antigua (sin `tini`), añade `--init` al
-`docker run` para lograr el mismo efecto.
+The image boots under `tini` as PID 1, which reaps the zombie (`defunct`)
+processes Chromium leaves behind; without it they pile up over many cycles and
+exhaust the system PIDs. If you use an old image (without `tini`), add `--init`
+to the `docker run` for the same effect.
 
 Logs:
 
@@ -55,33 +52,25 @@ Logs:
 docker logs -f scrapyrealestate
 ```
 
-## Con docker-compose
+## With docker-compose
 
-El repositorio incluye un `docker-compose.yml` que usa la imagen publicada. Para
-levantarlo y pararlo:
+The repository includes a `docker-compose.yml` that uses the published image:
 
 ```bash
 docker compose up -d
 docker compose down
 ```
 
-## Construir desde el código (opcional)
-
-Si en vez de usar la imagen publicada prefieres construirla tú mismo:
+## Build from source (optional)
 
 ```bash
 docker build -t scrapyrealestate .
-```
-
-Ejecutar:
-
-```bash
 docker run -d --name scrapyrealestate --restart=always -p 8080:8080 scrapyrealestate
 ```
 
-## Sin Docker
+## Without Docker
 
-Con Python 3.9+ (mejor en un [entorno virtual](https://docs.python.org/es/3/tutorial/venv.html)):
+With Python 3.9+ (better inside a [virtualenv](https://docs.python.org/3/tutorial/venv.html)):
 
 ```bash
 pip3 install -r scrapyrealestate/requirements.txt
@@ -91,105 +80,102 @@ cd scrapyrealestate
 python3 main.py
 ```
 
-En segundo plano en Linux: `nohup python3 main.py &` (logs en `nohup.out`).
+In the background on Linux: `nohup python3 main.py &` (logs in `nohup.out`).
 
-## Configuración
+## Configuration
 
-La primera vez, si no hay `data/config.json`, el programa abre una web de
-configuración en `http://localhost:8080/`. Rellénala y guarda: se crea
-`data/config.json` y el programa sigue solo. Mientras ese fichero exista no se
-vuelve a pedir nada (puedes editarlo a mano).
+The first time, if there is no `data/config.json`, the program opens a
+configuration web page at `http://localhost:8080/`. Fill it in and save:
+`data/config.json` is created and the program carries on by itself. As long as
+that file exists nothing is asked again (you can edit it by hand).
 
-Las URLs de los portales vienen precumplimentadas con búsquedas de Madrid;
-cámbialas por las tuyas antes de guardar.
+The portal URLs come pre-filled with Madrid searches; change them for your own
+before saving.
 
-Parámetros:
+Parameters:
 
-- `scrapy_rs_name`: nombre de la instancia.
-- `log_level`: nivel de log del script (por defecto `INFO`).
-- `log_level_scrapy`: nivel de log de Scrapy (por defecto `WARNING`).
-- `time_update`: segundos entre búsquedas (mínimo 300).
-- `telegram_chatuserID`: el chat id de tu canal (ver abajo).
-- `telegram_bot_token`: token de tu bot de @BotFather. Opcional (ver nota abajo).
-- `start_msg`: si es `True`, manda un mensaje al arrancar.
-- `min_price` / `max_price`: rango de precio (`max_price = 0` es sin límite).
+- `scrapy_rs_name`: instance name.
+- `log_level`: script log level (default `INFO`).
+- `log_level_scrapy`: Scrapy log level (default `WARNING`).
+- `time_update`: seconds between runs (minimum 300).
+- `telegram_chatuserID`: your channel's chat id (see below).
+- `telegram_bot_token`: your bot token from @BotFather. Optional (see note below).
+- `start_msg`: if `True`, sends a message on startup.
+- `min_price` / `max_price`: price range (`max_price = 0` means no limit).
 - `url_idealista` / `url_pisoscom` / `url_fotocasa` / `url_habitaclia` /
-  `url_yaencontre`: URLs de búsqueda de cada portal (admite varias).
-- `proxy_idealista`: proxies rotatorios para Idealista (`on`); por defecto off.
-- `send_first`: si se activa, avisa también de lo que ya hay en el primer ciclo.
+  `url_yaencontre`: search URLs for each portal (multiple allowed).
+- `proxy_idealista`: rotating proxies for Idealista (`on`); off by default.
+- `send_first`: if enabled, also alerts about what is already there on the first cycle.
 
-El `telegram_bot_token` es opcional: si lo dejas vacío se usa un bot público por
-defecto.
+The `telegram_bot_token` is optional: leave it empty and a default public bot
+is used.
 
-### Canal de Telegram y chat id
+### Telegram channel and chat id
 
-1. Crea un canal (público o privado).
-2. Añade tu bot como administrador con permiso para publicar (créalo con
-   [@BotFather](https://t.me/BotFather) y pon su token en el campo
-   `telegram_bot_token` de la web). Si el bot no está bien añadido, el programa
-   no arranca.
-3. Saca el chat id del canal, por ejemplo con [@RawDataBot](https://t.me/RawDataBot).
-   Es lo que va en `telegram_chatuserID` (tipo `-1001647968000`).
+1. Create a channel (public or private).
+2. Add your bot as administrator with posting permission (create it with
+   [@BotFather](https://t.me/BotFather) and put its token in the
+   `telegram_bot_token` field of the web page). If the bot is not added
+   correctly, the program does not start.
+3. Get the channel's chat id, for example with [@RawDataBot](https://t.me/RawDataBot).
+   That is what goes in `telegram_chatuserID` (like `-1001647968000`).
 
-## Estado de los portales
+## Portal status
 
-| Portal     | Estado    | Notas |
-|------------|-----------|-------|
-| Pisos.com  | Funciona  | HTML estable. |
-| Habitaclia | Funciona  | HTML estable. |
-| Yaencontre | Funciona  | Se carga con Playwright (devuelve 403 a peticiones planas). |
-| Fotocasa   | Funciona  | Playwright + Chromium; el spider lee el JSON embebido de la página, no las clases CSS. |
-| Idealista  | No fiable | DataDome bloquea el navegador automatizado en headless. Se probó Chromium, stealth, headful con Xvfb y Playwright parcheado (rebrowser) sin éxito; usarlo de verdad pediría un servicio anti-bot de pago. |
+| Portal     | Status     | Notes |
+|------------|------------|-------|
+| Pisos.com  | Working    | Stable HTML. |
+| Habitaclia | Working    | Stable HTML. |
+| Yaencontre | Working    | Loaded with Playwright (returns 403 to plain requests). |
+| Fotocasa   | Working    | Playwright + Chromium; the spider reads the page's embedded JSON, not the CSS classes. |
+| Idealista  | Unreliable | DataDome blocks the automated browser in headless. Chromium, stealth, headful with Xvfb and patched Playwright (rebrowser) were tried without success; real use would need a paid anti-bot service. |
 
-Rastrea con cabeza y respeta el refresco mínimo (300s).
+Crawl responsibly and respect the minimum refresh (300s).
 
-## Probar un spider
+## Test a spider
 
-`test_spider.sh` lanza un crawl de un portal y muestra cuántas viviendas saca y un
-par de ejemplos. Se ejecuta donde está `scrapy.cfg`. En Docker:
+`test_spider.sh` runs one portal crawl and shows how many listings it finds
+plus a couple of examples. Run it where `scrapy.cfg` lives. In Docker:
 
 ```bash
 docker exec -it scrapyrealestate bash -c \
   "cd /scrapyrealestate/scrapyrealestate && ./test_spider.sh fotocasa"
 ```
 
-Spiders: `idealista`, `pisoscom`, `habitaclia`, `fotocasa`, `yaencontre`. Puedes
-pasar tu URL como segundo argumento.
+Spiders: `idealista`, `pisoscom`, `habitaclia`, `fotocasa`, `yaencontre`. You
+can pass your URL as a second argument.
 
-## Estructura
+## Structure
 
 ```
 Dockerfile
 docker-compose.yml
 README.md
 scrapyrealestate/
-├── main.py                  # bucle, Telegram y deduplicación local
+├── main.py                  # loop, Telegram and local deduplication
 ├── requirements.txt
 ├── scrapy.cfg
 ├── test_spider.sh
 └── scrapyrealestate/
     ├── settings.py          # Scrapy + Playwright (Chromium)
     ├── items.py
-    ├── flask_server.py      # web de configuración del primer arranque
+    ├── flask_server.py      # first-boot configuration web page
     ├── proxies.py
     ├── templates/
     └── spiders/             # idealista, pisoscom, fotocasa, habitaclia, yaencontre
 ```
 
-`data/` (ignorada por git) guarda `config.json`, `ids.json` y `useragent.txt`.
+`data/` (git-ignored) holds `config.json`, `ids.json` and `useragent.txt`.
 
-## Créditos y licencia
+## Credits and license
 
-Basado en [mferark/scrapyrealestate](https://github.com/mferark/scrapyrealestate). Licencia GPL.
+Based on [mferark/scrapyrealestate](https://github.com/mferark/scrapyrealestate). GPL license.
 
-## Colaborar
+## Migration
 
-[![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/mcrespov)
+The bot was retired from the VM (2026-10-08). This repo is a public fork: code
+only, no data and no credentials.
 
-## Migracion
-
-El bot se retiro de la VM (2026-10-08). Este repo es un fork publico: solo codigo, sin datos ni credenciales.
-
-- El estado (data/) no se conservo. Al relanzar, los anuncios ya vistos se vuelven a enviar una vez.
-- El token del bot de Telegram va en config.json (ver README-fork.md) y no esta en el repo. Se regenera con BotFather (/token).
-- El resto de la configuracion de portales esta en config.asturias.json.
+- The state (`data/`) was not kept. On relaunch, already-seen listings are sent once again.
+- The Telegram bot token goes in `config.json` (see README-fork.md) and is not in the repo. Regenerate it with BotFather (`/token`).
+- The rest of the portal configuration is in `config.asturias.json`.
